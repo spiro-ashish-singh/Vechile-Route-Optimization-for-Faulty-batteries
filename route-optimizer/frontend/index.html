@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Truck Route + Capacity Optimizer</title>
+
+<!-- Leaflet.js: the mapping library. Loaded from a CDN so you don't
+     need to install anything for the map itself. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<!-- html2canvas: rasterizes the live map (tiles, routes, markers) into a
+     canvas so it can be saved as a PNG via the download-map button. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-raised: #1d222a;
+    --panel-border: #272d36;
+    --text: #eceff3;
+    --text-dim: #8b95a3;
+    --text-faint: #5b6472;
+    --accent: #45d6a8;
+    --accent-strong: #2fe3a8;
+    --accent-dim: #1f4638;
+    --danger: #f0685c;
+    --danger-dim: #402221;
+    --depot: #f5c04e;
+    --blue: #5b9bff;
+    --radius: 10px;
+    --radius-sm: 7px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Left panel: controls + results ---- */
+  #panel {
+    width: 400px;
+    min-width: 400px;
+    background: var(--panel);
+    border-right: 1px solid var(--panel-border);
+    padding: 22px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  #panel::-webkit-scrollbar { width: 8px; }
+  #panel::-webkit-scrollbar-thumb { background: var(--panel-border); border-radius: 4px; }
+  #panel::-webkit-scrollbar-track { background: transparent; }
+
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+    background: linear-gradient(140deg, var(--accent-strong), #1a9d78);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 14px rgba(69, 214, 168, 0.28);
+  }
+  .brand-mark svg { width: 19px; height: 19px; }
+
+  h1 {
+    font-size: 16.5px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+  }
+
+  h1 span { color: var(--text-dim); font-weight: 400; font-size: 12px; display: block; margin-top: 2px; letter-spacing: 0; }
+
+  .section {
+    border-top: 1px solid var(--panel-border);
+    padding-top: 18px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .section:first-child { border-top: none; padding-top: 0; }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 14px;
+  }
+  .section-title svg { width: 14px; height: 14px; opacity: 0.85; flex-shrink: 0; }
+
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  input[type="number"], input[type="text"] {
+    width: 100%;
+    background: var(--panel-raised);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 9px 11px;
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+    font-family: inherit;
+    margin-bottom: 12px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  input[type="number"]:focus, input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(69, 214, 168, 0.14);
+  }
+
+  select {
+    width: 100%;
+    background: var(--panel-raised);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 9px 11px;
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+    font-family: inherit;
+    margin-bottom: 12px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b95a3' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 30px;
+  }
+
+  select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(69, 214, 168, 0.14); }
+
+  .toll-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .toll-row input { margin-bottom: 0; }
+  .toll-row button { width: 34px; padding: 0; color: var(--danger); background: var(--panel-raised); border: 1px solid var(--panel-border); }
+  #add-toll-btn { background: transparent; border: 1px dashed var(--panel-border); color: var(--text-dim); font-size: 12px; padding: 8px; margin-top: 4px; font-weight: 500; }
+  .toll-total { color: var(--text-dim); font-size: 12px; margin-top: 8px; }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .checkbox-row input[type="checkbox"] {
+    width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer;
+  }
+
+  button {
+    width: 100%;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    border: none;
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s, background 0.15s;
+  }
+
+  button:hover { opacity: 0.9; }
+  button:active { transform: scale(0.99); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #solve-btn {
+    background: linear-gradient(135deg, var(--accent-strong), #21b287);
+    color: #06140f;
+    margin-bottom: 8px;
+    font-weight: 700;
+    box-shadow: 0 4px 14px rgba(69, 214, 168, 0.22);
+  }
+  #load-example-btn, #load-battery-btn { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); }
+  #clear-btn { background: transparent; border: 1px solid var(--panel-border); color: var(--text-dim); font-size: 12px; padding: 8px; margin-top: 8px; }
+
+  .mode-hint { font-size: 11.5px; color: var(--text-faint); margin: -4px 0 12px; line-height: 1.5; }
+  .divider-label { font-size: 11px; color: var(--text-faint); text-align: center; margin: 14px 0 10px; position: relative; }
+  .divider-label::before, .divider-label::after { content: ''; position: absolute; top: 50%; width: 38%; height: 1px; background: var(--panel-border); }
+  .divider-label::before { left: 0; }
+  .divider-label::after { right: 0; }
+
+  /* ---- Stop list ---- */
+  #stop-list { display: flex; flex-direction: column; gap: 7px; max-height: 320px; overflow-y: auto; margin-bottom: 12px; }
+
+  .stop-row {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    gap: 8px;
+    background: var(--panel-raised);
+    padding: 11px;
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    border: 1px solid var(--panel-border);
+  }
+
+  .stop-row .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; box-shadow: 0 0 0 3px rgba(255,255,255,0.04); }
+  .stop-row .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .stop-meta { display: flex; align-items: center; gap: 8px; }
+  .stop-row .remove { color: var(--danger); cursor: pointer; font-size: 16px; line-height: 16px; padding: 0 2px; opacity: 0.7; }
+  .stop-row .remove:hover { opacity: 1; }
+  .stop-row .depot-tag { color: var(--depot); font-size: 10px; letter-spacing: 0.08em; font-weight: 700; }
+  .depot-use-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .depot-use-toggle input[type="checkbox"] { width: 13px; height: 13px; margin: 0; accent-color: var(--depot); cursor: pointer; }
+  .stop-row.excluded { opacity: 0.5; }
+  .stop-row.excluded .depot-tag { color: var(--text-faint); }
+  .box-quantities { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .box-field { display: flex; flex-direction: column; gap: 4px; }
+  .box-field span { color: var(--text-faint); font-size: 10px; }
+  .box-field input { width: 100%; padding: 6px 7px; margin: 0; font-size: 12.5px; }
+  .stop-total { grid-column: 2 / -1; color: var(--text-dim); font-size: 11px; }
+  .stop-total strong { color: var(--text); }
+  .empty-hint { font-size: 12px; color: var(--text-faint); padding: 10px 2px; }
+
+  /* ---- Results ---- */
+  #results { display: none; flex-direction: column; gap: 12px; }
+
+  .result-card {
+    background: var(--panel-raised);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+
+  .metric-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 5px 0; }
+  .metric-row .label { color: var(--text-dim); }
+  .metric-row .value { font-weight: 600; }
+  .cost-breakdown { border-top: 1px solid var(--panel-border); margin-top: 6px; padding-top: 6px; }
+  .total-cost-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding: 11px 0 2px; border-top: 1px solid var(--panel-border); font-size: 13.5px; }
+  .total-cost-row strong { color: var(--accent); font-size: 18px; font-weight: 700; }
+
+  .fill-bar-track { width: 100%; height: 7px; background: var(--bg); border-radius: 4px; overflow: hidden; margin: 8px 0 6px; }
+  .fill-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-strong), var(--accent)); border-radius: 4px; transition: width 0.4s ease; }
+
+  .target-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 20px;
+    font-weight: 700;
+  }
+  .target-badge.met { background: var(--accent-dim); color: var(--accent); }
+  .target-badge.missed { background: var(--danger-dim); color: var(--danger); }
+
+  .route-list { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12.5px; }
+  .route-list li {
+    padding: 6px 0 6px 20px;
+    position: relative;
+    border-left: 2px solid var(--panel-border);
+    margin-left: 4px;
+  }
+  .route-list li:last-child { border-left: 2px solid transparent; }
+  .route-list li::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 10px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .route-list li.depot::before { background: var(--depot); width: 9px; height: 9px; left: -5.5px; }
+  .route-list li.depot { font-weight: 700; padding-top: 12px; color: var(--text); }
+  .route-list li.depot:not(:first-child) { margin-top: 4px; border-top: 1px dashed var(--panel-border); padding-top: 14px; }
+  .route-list .cartons { color: var(--text-faint); }
+
+  .dropped-list { font-size: 12px; color: var(--danger); margin-top: 8px; line-height: 1.8; }
+
+  #status-msg { font-size: 12.5px; color: var(--text-dim); min-height: 18px; line-height: 1.5; }
+  #status-msg.error { color: var(--danger); }
+
+  /* ---- Map ---- */
+  #map { flex: 1; height: 100vh; }
+
+  .leaflet-popup-content { font-size: 13px; font-family: 'Inter', sans-serif; }
+  .leaflet-popup-content-wrapper { border-radius: 8px; }
+  .traffic-legend { background: rgba(23, 27, 33, 0.95); color: var(--text); padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 8px; font-size: 12px; line-height: 1.8; box-shadow: 0 4px 16px rgba(0,0,0,0.35); font-family: 'Inter', sans-serif; }
+  .traffic-legend strong { display: block; margin-bottom: 3px; }
+  .traffic-key { display: inline-block; width: 24px; height: 5px; margin-right: 7px; vertical-align: middle; border-radius: 3px; }
+  /* Reset-view and download-map render as a .leaflet-bar group (see
+     mapToolsControl) so they already inherit the same dark styling and
+     grouping as the zoom control via the .leaflet-bar/.leaflet-bar a
+     rules below — only the icon sizing needs a small nudge here. */
+  .map-tools-control a { font-size: 15px; text-decoration: none; }
+  .map-tools-control a.busy { opacity: 0.5; pointer-events: none; }
+
+  /* Leaflet's default control chrome is styled for light basemaps; restyle
+     it to match the app's dark theme instead of clashing with it. */
+  .leaflet-control-layers { background: var(--panel) !important; color: var(--text) !important; border: 1px solid var(--panel-border) !important; box-shadow: 0 4px 16px rgba(0,0,0,0.35) !important; border-radius: 8px !important; font-family: 'Inter', sans-serif; }
+  .leaflet-control-layers-expanded { padding: 10px 14px !important; }
+  .leaflet-control-layers label { color: var(--text) !important; font-size: 12.5px; }
+  .leaflet-control-layers-separator { border-top: 1px solid var(--panel-border) !important; }
+  .leaflet-bar { border-radius: 8px !important; overflow: hidden; }
+  .leaflet-bar a { background: var(--panel) !important; color: var(--text) !important; border-bottom: 1px solid var(--panel-border) !important; }
+  .leaflet-bar a:hover { background: var(--panel-raised) !important; }
+  .leaflet-control-attribution { background: rgba(23, 27, 33, 0.85) !important; color: var(--text-dim) !important; font-family: 'Inter', sans-serif; }
+  .leaflet-control-attribution a { color: var(--text-dim) !important; }
+
+  /* Live traffic has no meaning without TomTom driving the route — dim and
+     block interaction on it instead of leaving it clickable but useless. */
+  .leaflet-control-layers-overlays label.overlay-disabled { opacity: 0.4; cursor: not-allowed; }
+  .leaflet-control-layers-overlays label.overlay-disabled input { cursor: not-allowed; }
+
+  .route-order-marker { display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #06140f; font-weight: 700; font-size: 11px; border: 2px solid #12151a; box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
+  /* The Start/End marker itself is built as inline SVG in orderIcon() (a
+     triangle, distinguishable from these numbered circles at a glance) —
+     not CSS clip-path, since html2canvas (the "Download map" button)
+     can't rasterize clip-path correctly but handles SVG shapes fine. */
+
+  /* Route lines get a dark halo underneath so they read clearly against
+     both the dark basemap and the TomTom basemap option. */
+  .route-halo { filter: drop-shadow(0 0 2px rgba(0,0,0,0.6)); }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <div class="section">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 7h11v9H2V7z" fill="#06140f"/><path d="M13 10h4l3.5 3.5V16H13v-6z" fill="#06140f" fill-opacity="0.75"/><circle cx="6" cy="17.5" r="1.6" fill="#0f1216"/><circle cx="16.5" cy="17.5" r="1.6" fill="#0f1216"/></svg>
+      </div>
+      <h1>Truck Route Optimizer<span>Daily shipment planning &middot; automatic multi-truck routes</span></h1>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+      Fleet &amp; shipment settings
+    </div>
+
+    <div class="field-row">
+      <div>
+        <label for="capacity">Truck capacity (batteries)</label>
+        <input type="number" id="capacity" value="500" min="1">
+      </div>
+      <div>
+        <label for="fill-target">Target fill %</label>
+        <input type="number" id="fill-target" value="90" min="0" max="100">
+      </div>
+    </div>
+    <div class="mode-hint">The optimizer automatically calculates the minimum number of trucks needed for all pickup shipments.</div>
+
+    <div class="field-row">
+      <div>
+        <label for="max-driving-hours">Max driving hours/day</label>
+        <input type="number" id="max-driving-hours" value="8" min="1" max="24" step="0.5">
+      </div>
+      <div>
+        <label for="max-trip-days">Max days per trip</label>
+        <input type="number" id="max-trip-days" value="1" min="1" max="14" step="1">
+      </div>
+    </div>
+    <div class="mode-hint">A truck may range across multiple days before returning to depot — its driving budget is max hours/day &times; max days per trip.</div>
+
+    <label for="fuel-cost">Fuel cost per km ($)</label>
+    <input type="number" id="fuel-cost" value="8" min="0" step="0.5">
+
+    <label for="routing-algorithm">Road routing algorithm</label>
+    <select id="routing-algorithm">
+      <option value="tomtom" selected>TomTom real-time traffic routing</option>
+      <option value="osrm">OSRM (no live traffic)</option>
+    </select>
+    <div class="checkbox-row">
+      <input type="checkbox" id="prefer-stops" checked>
+      <label for="prefer-stops" style="margin: 0;">Prefer more stops over fewer big ones</label>
+    </div>
+
+    <label style="margin-top: 4px;">Toll taxes ($ per toll)</label>
+    <div id="toll-list"></div>
+    <button id="add-toll-btn" type="button">+ Add toll</button>
+    <div class="toll-total" id="toll-total">Total toll tax: $0.00</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.5 7-12a7 7 0 10-14 0c0 5.5 7 12 7 12z"/><circle cx="12" cy="9" r="2.4"/></svg>
+      Stops
+    </div>
+    <div class="mode-hint" style="margin-top: -8px;">Stops are always loaded from source data below &mdash; nothing can be added by clicking the map.</div>
+    <div id="stop-list"></div>
+    <button id="load-example-btn" style="margin-top: 8px;">Load example: Nairobi</button>
+    <button id="clear-btn">Clear all stops</button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M9 7V5a3 3 0 016 0v2"/></svg>
+      Faulty-battery pickups
+    </div>
+    <label for="battery-country">Country</label>
+    <select id="battery-country">
+      <option value="Rwanda">Rwanda</option>
+      <option value="Uganda">Uganda</option>
+      <option value="Kenya">Kenya</option>
+    </select>
+    <button id="load-battery-btn" type="button">Load battery stations</button>
+  </div>
+
+  <div class="section">
+    <button id="solve-btn">Solve route</button>
+    <div id="status-msg"></div>
+  </div>
+
+  <div class="section" id="results">
+    <div class="section-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V9M12 19V5M20 19v-7"/></svg>
+      Results
+    </div>
+    <div class="result-card">
+      <div class="metric-row"><span class="label">Batteries picked</span><span class="value" id="r-cartons">-</span></div>
+      <div class="metric-row"><span class="label">Trucks needed</span><span class="value" id="r-trucks-needed">-</span></div>
+      <div class="fill-bar-track"><div class="fill-bar-fill" id="r-fill-bar" style="width:0%"></div></div>
+      <div class="metric-row"><span class="label">Fill target</span><span class="value" id="r-target-badge">-</span></div>
+      <div class="metric-row"><span class="label">Stops served</span><span class="value" id="r-stops-served">-</span></div>
+      <div class="metric-row"><span class="label">Stops dropped</span><span class="value" id="r-stops-dropped">-</span></div>
+      <div class="cost-breakdown">
+        <div class="metric-row"><span class="label">Fuel cost</span><span class="value" id="r-fuel-cost">$0.00</span></div>
+        <div class="metric-row"><span class="label">Toll tax</span><span class="value" id="r-toll-tax">$0.00</span></div>
+        <div class="total-cost-row"><span>Total trip cost</span><strong id="r-cost">$0.00</strong></div>
+      </div>
+    </div>
+
+    <div class="result-card">
+      <label style="margin-bottom: 8px;">Route order</label>
+      <ul class="route-list" id="r-route-list"></ul>
+    </div>
+
+    <div id="r-dropped-section" class="result-card" style="display:none;">
+      <label style="margin-bottom: 4px;">Dropped stops (didn't fit)</label>
+      <div class="dropped-list" id="r-dropped-list"></div>
+    </div>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script>
+// =============================================================
+// STATE
+// =============================================================
+// `stops` holds every stop the user has placed. stops[0] is always
+// the depot (if it exists). Pickup stops contain small/mid/large battery counts.
+let stops = [];
+let markers = [];       // Leaflet marker objects, parallel to `stops`
+let routeLine = null;   // legacy combined route line reference
+let routeLines = [];
+let routeLabelMarkers = []; // numbered Start/1/2/.../End markers drawn per solve
+const BACKEND_API_URL = 'http://localhost:8001';
+
+let tollTaxes = [];
+
+// =============================================================
+// MAP SETUP
+// =============================================================
+const map = L.map('map').setView([-1.2921, 36.8219], 12); // Nairobi by default
+const defaultMapCenter = [-1.2921, 36.8219];
+
+// Reset-view and download-map share ONE grouped toolbar (a standard
+// Leaflet .leaflet-bar, the same construct the zoom control uses) instead
+// of two separate floating buttons — visually consistent with the zoom
+// control right above it instead of looking like two disconnected squares.
+const mapToolsControl = L.control({ position: 'topleft' });
+mapToolsControl.onAdd = () => {
+  const container = L.DomUtil.create('div', 'leaflet-bar map-tools-control');
+
+  const resetButton = L.DomUtil.create('a', '', container);
+  resetButton.href = '#';
+  resetButton.title = 'Reset map view';
+  resetButton.innerHTML = '&#8962;';
+  resetButton.addEventListener('click', e => { e.preventDefault(); map.setView(defaultMapCenter, 12); });
+
+  // Rasterizes the current map view (tiles, route lines, markers) into a
+  // PNG and triggers a browser download. Both basemaps (TomTom, Esri) send
+  // Access-Control-Allow-Origin: *, and the tile layers above are set to
+  // crossOrigin:true to match, so html2canvas can actually read the tile
+  // pixels instead of hitting a tainted-canvas security error.
+  const downloadButton = L.DomUtil.create('a', '', container);
+  downloadButton.href = '#';
+  downloadButton.title = 'Download map as image';
+  downloadButton.innerHTML = '&#8681;'; // down arrow
+  downloadButton.addEventListener('click', e => {
+    e.preventDefault();
+    if (!downloadButton.classList.contains('busy')) downloadMapImage(downloadButton);
+  });
+
+  L.DomEvent.disableClickPropagation(container);
+  return container;
+};
+mapToolsControl.addTo(map);
+
+async function downloadMapImage(button) {
+  const originalHtml = button.innerHTML;
+  button.innerHTML = '&hellip;';
+  button.classList.add('busy');
+  try {
+    // Leaflet's own zoom/attribution/layer controls shouldn't appear in
+    // the saved image — hide them for the capture, then restore them.
+    const controlsToHide = document.querySelectorAll('.leaflet-control-container > *');
+    controlsToHide.forEach(el => { el.style.visibility = 'hidden'; });
+
+    const mapElement = document.getElementById('map');
+    const canvas = await html2canvas(mapElement, {
+      useCORS: true,
+      logging: false,
+      backgroundColor: null,
+    });
+
+    controlsToHide.forEach(el => { el.style.visibility = ''; });
+
+    const link = document.createElement('a');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    link.download = `route-map-${timestamp}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    setStatus('Map image downloaded.', false);
+  } catch (error) {
+    console.error('Map download failed:', error);
+    setStatus(`Could not download the map image: ${error.message}`, true);
+  } finally {
+    button.innerHTML = originalHtml;
+    button.classList.remove('busy');
+  }
+}
+
+const tomTomApiKey = '2YuAfLSaDCZxrfiSC5zsFpirtzLlRU2c';
+const tomTomTiles = L.tileLayer(
+  `https://api.tomtom.com/map/1/tile/basic/main/{z}/{x}/{y}.png?view=Unified&language=en-US&key=${tomTomApiKey}`,
+  // crossOrigin lets html2canvas read these tile pixels for the "Download
+  // map" button — TomTom's tile server sends Access-Control-Allow-Origin: *,
+  // so this doesn't taint the canvas the way most tile providers would.
+  { maxZoom: 22, updateWhenIdle: true, keepBuffer: 1, attribution: '&copy; TomTom', crossOrigin: true }
+);
+tomTomTiles.addTo(map);
+
+// OSRM has no live-traffic concept and no map-tile product of its own — it
+// only computes routes over OpenStreetMap's road network. So when OSRM is
+// the actual data source (selected, or fallen back to because TomTom was
+// unavailable), the basemap switches away from TomTom's branding instead of
+// showing it for a result TomTom didn't actually produce.
+//
+// This is NOT OpenStreetMap's own tile server (tile.openstreetmap.org) —
+// that server actively 403-blocks embedded-app traffic that doesn't follow
+// its usage policy (osm.wiki/Blocked), which is exactly what happened here.
+// Esri's World Street Map tiles are free, keyless, and already proven to
+// work in this project's own history — using those instead.
+const osmTiles = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 19, attribution: '&copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ', crossOrigin: true }
+);
+
+// Live traffic is opt-in via the layer control checkbox below, and only
+// ever meaningful on the TomTom basemap — see setRoutingProvider().
+const trafficLayer = L.tileLayer(
+  `https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key=${tomTomApiKey}`,
+  { opacity: 0.55, maxZoom: 22, updateWhenIdle: true, keepBuffer: 1, attribution: '&copy; TomTom traffic', crossOrigin: true }
+);
+const layersControl = L.control.layers({
+  'TomTom streets': tomTomTiles,
+  'Street map (no live traffic)': osmTiles,
+}, { 'Live traffic': trafficLayer }, { position: 'topright', collapsed: false }).addTo(map);
+
+function reportTrafficTileError(event) {
+  console.error('TomTom traffic tile error:', event.tile && event.tile.src);
+}
+trafficLayer.on('tileerror', reportTrafficTileError);
+
+function reportTileError(event) {
+  setStatus('TomTom map tiles could not load. Check the API key origin restriction.', true);
+  console.error('TomTom tile error:', event.tile && event.tile.src);
+}
+tomTomTiles.on('tileerror', reportTileError);
+
+const trafficLegend = L.control({ position: 'bottomright' });
+trafficLegend.onAdd = () => {
+  const element = L.DomUtil.create('div', 'traffic-legend');
+  element.innerHTML = `
+    <strong>Live traffic</strong>
+    <div><span class="traffic-key" style="background:#35b85a"></span>Free flow</div>
+    <div><span class="traffic-key" style="background:#ffd32a"></span>Moderate</div>
+    <div><span class="traffic-key" style="background:#f28c28"></span>Slow</div>
+    <div><span class="traffic-key" style="background:#e53935"></span>Heavy</div>
+  `;
+  L.DomEvent.disableClickPropagation(element);
+  return element;
+};
+
+// The legend only makes sense while the traffic overlay is actually on —
+// showing it unconditionally implied traffic was active even when it wasn't.
+function syncTrafficLegend() {
+  const isActive = map.hasLayer(trafficLayer);
+  if (isActive && !map.hasLayer(trafficLegend)) trafficLegend.addTo(map);
+  else if (!isActive && map.hasLayer(trafficLegend)) map.removeControl(trafficLegend);
+}
+map.on('overlayadd overlayremove', syncTrafficLegend);
+
+// ---- Keep the basemap/traffic UI honest about which routing engine is
+// actually in play, instead of always showing TomTom regardless of what
+// really computed the route. ----
+function getBaseLayerRadio(labelText) {
+  for (const label of document.querySelectorAll('.leaflet-control-layers-base label')) {
+    if (label.textContent.trim() === labelText) return label.querySelector('input[type=radio]');
+  }
+  return null;
+}
+
+function getTrafficOverlayControls() {
+  const checkbox = document.querySelector('.leaflet-control-layers-overlays input[type=checkbox]');
+  return { checkbox, label: checkbox ? checkbox.closest('label') : null };
+}
+
+function setRoutingProvider(provider) {
+  const targetLabel = provider === 'osrm' ? 'Street map (no live traffic)' : 'TomTom streets';
+  const radio = getBaseLayerRadio(targetLabel);
+  if (radio && !radio.checked) radio.click(); // real click -> Leaflet swaps the base layer itself
+
+  const { checkbox, label } = getTrafficOverlayControls();
+  if (!checkbox) return;
+  if (provider === 'osrm') {
+    if (checkbox.checked) checkbox.click(); // turn traffic off the same way a user would
+    checkbox.disabled = true;
+    if (label) label.classList.add('overlay-disabled');
+  } else {
+    checkbox.disabled = false;
+    if (label) label.classList.remove('overlay-disabled');
+  }
+  syncTrafficLegend();
+}
+
+document.getElementById('routing-algorithm').addEventListener('change', e => {
+  setRoutingProvider(e.target.value);
+});
+setRoutingProvider(document.getElementById('routing-algorithm').value);
+
+// Leaflet can initialize before the flex layout has its final dimensions.
+// Recalculate the viewport after layout and whenever the window changes size.
+function refreshMapSize() {
+  map.invalidateSize({ animate: false });
+}
+window.addEventListener('resize', refreshMapSize);
+setTimeout(refreshMapSize, 100);
+
+// Deliberately no map-click-to-add-stop handler — every stop must come
+// from a real source (the example dataset or the battery CSV/warehouse
+// data below), never a stray click on the map.
+
+// =============================================================
+// STOP MANAGEMENT
+// =============================================================
+function renderTollList() {
+  const container = document.getElementById('toll-list');
+  container.innerHTML = '';
+  tollTaxes.forEach((tax, index) => {
+    const row = document.createElement('div');
+    row.className = 'toll-row';
+    row.innerHTML = `<input type="number" min="0" step="0.01" value="${tax}" data-index="${index}" class="toll-input" aria-label="Toll tax ${index + 1}">
+      <button type="button" data-index="${index}" class="remove-toll" aria-label="Remove toll">&times;</button>`;
+    container.appendChild(row);
+  });
+  container.querySelectorAll('.toll-input').forEach(input => {
+    input.addEventListener('change', e => {
+      tollTaxes[parseInt(e.target.dataset.index)] = Math.max(0, parseFloat(e.target.value) || 0);
+      renderTollList();
+    });
+  });
+  container.querySelectorAll('.remove-toll').forEach(button => {
+    button.addEventListener('click', e => {
+      tollTaxes.splice(parseInt(e.target.dataset.index), 1);
+      renderTollList();
+    });
+  });
+  document.getElementById('toll-total').textContent = `Total toll tax: $${tollTaxes.reduce((sum, tax) => sum + tax, 0).toFixed(2)}`;
+}
+
+document.getElementById('add-toll-btn').addEventListener('click', () => {
+  tollTaxes.push(0);
+  renderTollList();
+  const inputs = document.querySelectorAll('.toll-input');
+  inputs[inputs.length - 1].focus();
+});
+
+function popupHtmlFor(stop) {
+  const bodyLine = stop.is_depot ? 'Depot' : `${stop.demand} batteries`;
+  return `<b>${stop.name}</b><br>${bodyLine}<br><button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
+}
+
+function addStop(stop) {
+  const hasSizeCounts = (stop.small_boxes || 0) + (stop.mid_boxes || 0) + (stop.large_boxes || 0) > 0;
+  stop.small_boxes = stop.small_boxes || 0;
+  stop.mid_boxes = stop.mid_boxes || (!hasSizeCounts ? (stop.demand || 0) : 0);
+  stop.large_boxes = stop.large_boxes || 0;
+  stop.demand = stop.small_boxes + stop.mid_boxes + stop.large_boxes;
+  // The very first stop placed manually (map click) is always the depot;
+  // datasets with real multi-warehouse data (e.g. battery stations) flag
+  // every warehouse candidate explicitly via is_depot instead.
+  stop.is_depot = stop.is_depot || stops.length === 0;
+  stops.push(stop);
+  const isDepot = stop.is_depot;
+
+  const marker = L.circleMarker([stop.lat, stop.lon], {
+    radius: isDepot ? 9 : 7,
+    fillColor: isDepot ? '#f5c04e' : '#4fd1a5',
+    color: '#12151a',
+    weight: 2,
+    fillOpacity: 1,
+  }).addTo(map);
+
+  marker.bindPopup(popupHtmlFor(stop));
+  // The remove button's target index is resolved fresh every time the
+  // popup opens (via markers.indexOf), not baked in at creation — earlier
+  // removals shift every later stop's index, so a stale baked-in index
+  // would delete the wrong stop (or nothing) after the list had changed.
+  marker.on('popupopen', event => {
+    const removeButton = event.popup.getElement().querySelector('.map-remove-stop');
+    if (removeButton) {
+      removeButton.addEventListener('click', () => removeStop(markers.indexOf(marker)));
+    }
+  });
+  markers.push(marker);
+
+  renderStopList();
+}
+
+function removeStop(index) {
+  stops.splice(index, 1);
+  map.removeLayer(markers[index]);
+  markers.splice(index, 1);
+  renderStopList();
+}
+
+function clearAllStops() {
+  markers.forEach(m => map.removeLayer(m));
+  stops = [];
+  markers = [];
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  routeLines.forEach(line => map.removeLayer(line));
+  routeLines = [];
+  routeLabelMarkers.forEach(m => map.removeLayer(m));
+  routeLabelMarkers = [];
+  renderStopList();
+  document.getElementById('results').style.display = 'none';
+}
+
+function renderStopList() {
+  const container = document.getElementById('stop-list');
+  container.innerHTML = '';
+
+  if (stops.length === 0) {
+    container.innerHTML = '<div class="empty-hint">No stops yet. Click the map, or load a dataset below.</div>';
+    return;
+  }
+
+  stops.forEach((stop, i) => {
+    const isDepot = !!stop.is_depot;
+    const isExcluded = isDepot && !!stop.excluded;
+    const row = document.createElement('div');
+    row.className = 'stop-row' + (isExcluded ? ' excluded' : '');
+    row.innerHTML = `
+      <div class="dot" style="background:${isDepot ? '#f5c04e' : '#4fd1a5'}"></div>
+      <div class="name">${stop.name}</div>
+      <div class="stop-meta">
+        ${isDepot ? `<label class="depot-use-toggle"><input type="checkbox" class="depot-use-checkbox" data-index="${i}" ${isExcluded ? '' : 'checked'}><span class="depot-tag">DEPOT</span></label>` : ''}
+        <span class="remove" data-index="${i}">&times;</span>
+      </div>
+      ${isDepot ? '' : `<div class="box-quantities">
+        <label class="box-field"><span>Small batteries</span><input type="number" value="${stop.small_boxes}" min="0" data-index="${i}" data-size="small_boxes" class="box-count-input"></label>
+        <label class="box-field"><span>Mid batteries</span><input type="number" value="${stop.mid_boxes}" min="0" data-index="${i}" data-size="mid_boxes" class="box-count-input"></label>
+        <label class="box-field"><span>Large batteries</span><input type="number" value="${stop.large_boxes}" min="0" data-index="${i}" data-size="large_boxes" class="box-count-input"></label>
+      </div><div class="stop-total">Total: <strong>${stop.demand}</strong> batteries</div>`}
+    `;
+    container.appendChild(row);
+  });
+
+  // Wire up box quantity edits and removal, since these rows are rebuilt each time
+  container.querySelectorAll('.box-count-input').forEach(input => {
+    input.addEventListener('change', (e) => {
+      const idx = parseInt(e.target.dataset.index);
+      const size = e.target.dataset.size;
+      stops[idx][size] = Math.max(0, parseInt(e.target.value) || 0);
+      stops[idx].demand = stops[idx].small_boxes + stops[idx].mid_boxes + stops[idx].large_boxes;
+      markers[idx].bindPopup(popupHtmlFor(stops[idx]));
+      renderStopList();
+    });
+  });
+  container.querySelectorAll('.remove').forEach(el => {
+    el.addEventListener('click', (e) => {
+      removeStop(parseInt(e.target.dataset.index));
+    });
+  });
+  // Untick a depot to exclude it from routing entirely (the solver won't
+  // consider it a start/end candidate) without having to remove it and
+  // reload the whole dataset to bring it back.
+  container.querySelectorAll('.depot-use-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', (e) => {
+      const idx = parseInt(e.target.dataset.index);
+      stops[idx].excluded = !e.target.checked;
+      markers[idx].setStyle({
+        fillColor: stops[idx].excluded ? '#5b6472' : '#f5c04e',
+        fillOpacity: stops[idx].excluded ? 0.5 : 1,
+      });
+      renderStopList();
+    });
+  });
+}
+
+// =============================================================
+// LOAD EXAMPLE (calls backend for ready-made Nairobi stops)
+// =============================================================
+document.getElementById('load-example-btn').addEventListener('click', async () => {
+  setStatus('Loading example stops...', false);
+  try {
+    const res = await fetch(`${BACKEND_API_URL}/example-stops`);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const data = await res.json();
+
+    clearAllStops();
+    data.stops.forEach(s => addStop(s));
+
+    // Fit the map to show all the loaded stops
+    const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
+    map.fitBounds(bounds, { padding: [40, 40] });
+
+    setStatus(`Loaded ${data.stops.length} example stops (Nairobi).`, false);
+  } catch (err) {
+    setStatus(`Could not connect to the route service. Is the backend running? (${err.message})`, true);
+  }
+});
+
+// =============================================================
+// LOAD BATTERY STATIONS (calls backend for a country's pending
+// faulty-battery pickups, from the CSV-backed /battery-stations endpoint)
+// =============================================================
+document.getElementById('load-battery-btn').addEventListener('click', async () => {
+  const country = document.getElementById('battery-country').value;
+  setStatus(`Loading ${country} battery stations...`, false);
+  try {
+    const res = await fetch(`${BACKEND_API_URL}/battery-stations?country=${encodeURIComponent(country)}`);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `Server returned ${res.status}`);
+    }
+    const data = await res.json();
+
+    clearAllStops();
+    data.stops.forEach(s => addStop(s));
+    document.getElementById('fuel-cost').value = data.road_cost_per_km.toFixed(3);
+
+    const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
+    map.fitBounds(bounds, { padding: [40, 40] });
+
+    let message = `Loaded ${data.stops.length - 1} ${country} battery stations (depot is a placeholder).`;
+    if (data.skipped.length > 0) {
+      message += ` ${data.skipped.length} station(s) skipped (no coordinates).`;
+    }
+    setStatus(message, false);
+  } catch (err) {
+    setStatus(`Could not load battery stations. Is the backend running? (${err.message})`, true);
+  }
+});
+
+document.getElementById('clear-btn').addEventListener('click', clearAllStops);
+
+// =============================================================
+// SOLVE (calls backend /solve endpoint)
+// =============================================================
+document.getElementById('solve-btn').addEventListener('click', async () => {
+  if (stops.length < 2) {
+    setStatus('Add a depot and at least one pickup stop first.', true);
+    return;
+  }
+
+  // Unticked depots are excluded from routing entirely — dropped from the
+  // request rather than sent as an unusable stop.
+  const activeStops = stops.filter(stop => !stop.excluded);
+  if (!activeStops.some(stop => stop.is_depot)) {
+    setStatus('At least one depot/warehouse must stay ticked to solve a route.', true);
+    return;
+  }
+
+  const requestBody = {
+    stops: activeStops,
+    vehicle_capacity: parseInt(document.getElementById('capacity').value),
+    max_driving_hours: parseFloat(document.getElementById('max-driving-hours').value),
+    max_trip_days: parseInt(document.getElementById('max-trip-days').value) || 1,
+    target_fill_ratio: parseFloat(document.getElementById('fill-target').value) / 100,
+    prefer_more_stops: document.getElementById('prefer-stops').checked,
+    road_cost_per_km: parseFloat(document.getElementById('fuel-cost').value),
+    routing_algorithm: document.getElementById('routing-algorithm').value,
+    road_place: 'Nairobi, Kenya',
+    toll_taxes: tollTaxes,
+    shipment_mode: 'same', // pickup/drop are always the same location in this app now
+  };
+
+  setStatus('Solving...', false);
+  document.getElementById('solve-btn').disabled = true;
+
+  try {
+    const res = await fetch(`${BACKEND_API_URL}/solve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `Server returned ${res.status}`);
+    }
+
+    const result = await res.json();
+    await renderResult(result);
+    // Reflect what the backend ACTUALLY used, not just what was requested —
+    // a TomTom request can silently fall back to OSRM (see app.py), and the
+    // map/traffic UI should show the real source, not the one that was asked for.
+    setRoutingProvider(result.routing_algorithm.startsWith('tomtom') ? 'tomtom' : 'osrm');
+    setStatus(describeRoutingAlgorithm(result.routing_algorithm), false);
+  } catch (err) {
+    setStatus(`Error: ${err.message}`, true);
+  } finally {
+    document.getElementById('solve-btn').disabled = false;
+  }
+});
+
+function setStatus(msg, isError) {
+  const el = document.getElementById('status-msg');
+  el.textContent = msg;
+  el.className = isError ? 'error' : '';
+}
+
+// Turns the backend's raw routing_algorithm string (which embeds a
+// fallback reason when TomTom wasn't reachable, e.g. "osrm-real-road
+// (tomtom unavailable: HTTP Error 403: Forbidden)") into a clean,
+// human-readable status line instead of showing the nested-parens raw form.
+function describeRoutingAlgorithm(routingAlgorithm) {
+  const fallbackMatch = routingAlgorithm.match(/^osrm-real-road \(tomtom unavailable: (.+)\)$/);
+  if (fallbackMatch) {
+    return `Route solved via OSRM — TomTom was unavailable (${fallbackMatch[1]}), so it used OSRM instead.`;
+  }
+  if (routingAlgorithm === 'tomtom-live-traffic') {
+    return 'Route solved using TomTom real-time traffic data.';
+  }
+  if (routingAlgorithm === 'osrm-real-road') {
+    return 'Route solved using OSRM real road data.';
+  }
+  return `Route solved (${routingAlgorithm}).`;
+}
+
+// =============================================================
+// RENDER RESULTS (metrics panel + route line + marker colors)
+// =============================================================
+async function getRoadGeometry(coordinates) {
+  // Proxied through the backend, not fetched directly from OSRM here —
+  // OSRM's public /route endpoint CORS-blocks direct browser requests.
+  const response = await fetch(`${BACKEND_API_URL}/route-geometry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ coordinates: coordinates.map(c => [c.lat, c.lon]) }),
+  });
+  if (!response.ok) throw new Error(`Road geometry service returned ${response.status}`);
+  const data = await response.json();
+  return data.geometry;
+}
+
+async function renderResult(result) {
+  document.getElementById('results').style.display = 'flex';
+
+  const truckCapacity = parseInt(document.getElementById('capacity').value);
+  const capacity = truckCapacity * result.trucks_needed;
+  const fillPct = (result.fill_ratio * 100).toFixed(1);
+
+  document.getElementById('r-cartons').textContent = `${result.total_cartons_picked} / ${capacity} (${fillPct}%)`;
+  document.getElementById('r-trucks-needed').textContent = result.trucks_needed;
+  document.getElementById('r-fill-bar').style.width = `${Math.min(100, fillPct)}%`;
+
+  const badge = document.getElementById('r-target-badge');
+  badge.innerHTML = result.meets_fill_target
+    ? '<span class="target-badge met">Met</span>'
+    : '<span class="target-badge missed">Not reached</span>';
+
+  document.getElementById('r-stops-served').textContent = result.num_stops_served;
+  document.getElementById('r-stops-dropped').textContent = result.dropped_stops.length;
+  document.getElementById('r-fuel-cost').textContent = `$${result.fuel_cost.toFixed(2)}`;
+  document.getElementById('r-toll-tax').textContent = `$${result.toll_tax_total.toFixed(2)}`;
+  document.getElementById('r-cost').textContent = `$${result.total_operating_cost.toFixed(2)}`;
+
+  // Route order list
+  const routeList = document.getElementById('r-route-list');
+  routeList.innerHTML = '';
+  result.truck_routes.forEach(truckRoute => {
+    const heading = document.createElement('li');
+    heading.className = 'depot';
+    const dayLabel = truckRoute.estimated_days && truckRoute.estimated_days > 1
+      ? ` &middot; ~${truckRoute.estimated_days}-day trip`
+      : '';
+    heading.innerHTML = `Truck ${truckRoute.truck} &middot; ${truckRoute.total_batteries_picked} batteries `
+      + `&middot; ${truckRoute.distance_km} km &middot; $${truckRoute.fuel_cost.toFixed(2)} fuel `
+      + `&middot; ${truckRoute.driving_hours.toFixed(2)}h driving${dayLabel}`;
+    routeList.appendChild(heading);
+    truckRoute.visit_order.forEach((stopIndex, i) => {
+      const li = document.createElement('li');
+      // A stop is a depot if IT is flagged so, not just because it happens
+      // to be node 0 — with multiple real warehouses, a truck can just as
+      // easily start/end at warehouse #2 or #3.
+      const isDepot = !!(stops[stopIndex] && stops[stopIndex].is_depot);
+      if (isDepot) li.className = 'depot';
+      const batteryLabel = truckRoute.boxes[i] < 0
+        ? `drop ${Math.abs(truckRoute.boxes[i])} batteries`
+        : `pick ${truckRoute.boxes[i]} batteries`;
+      li.innerHTML = isDepot
+        ? truckRoute.visit_order_names[i]
+        : `${truckRoute.visit_order_names[i]} <span class="cartons">(${batteryLabel})</span>`;
+      routeList.appendChild(li);
+    });
+  });
+
+  // Dropped stops list
+  const droppedSection = document.getElementById('r-dropped-section');
+  const droppedList = document.getElementById('r-dropped-list');
+  if (result.dropped_stop_names.length > 0) {
+    droppedSection.style.display = 'block';
+    droppedList.innerHTML = result.dropped_stop_names.map(n => `&minus; ${n}`).join('<br>');
+  } else {
+    droppedSection.style.display = 'none';
+  }
+
+  // Draw the route line on the map
+  if (routeLine) map.removeLayer(routeLine);
+  routeLines.forEach(line => map.removeLayer(line));
+  const routeColors = ['#4fd1a5', '#f5c04e', '#67a6ff', '#e0685a', '#c084fc', '#fb923c'];
+
+  // When more than one truck shares the exact same real-world depot, their
+  // start/end triangles would land on the identical coordinate and the
+  // later one would completely hide the earlier one. Fan out repeat
+  // occurrences of the same coordinate a little so every truck's marker
+  // stays visible — computed ONCE, up front, so both the route line (which
+  // gets a short connector segment to the offset point) and the marker
+  // itself agree on where that truck actually starts/ends.
+  const startMarkerCounts = new Map();
+  function fanOutIfDuplicate(lat, lon) {
+    const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+    const occurrence = startMarkerCounts.get(key) || 0;
+    startMarkerCounts.set(key, occurrence + 1);
+    if (occurrence === 0) return [lat, lon];
+    const angle = occurrence * 137.5 * (Math.PI / 180); // golden angle: spreads evenly as count grows
+    const radiusDegrees = 0.0009 * occurrence; // ~100m per extra truck — enough to stay visually separated at typical city-level zoom
+    return [lat + radiusDegrees * Math.cos(angle), lon + radiusDegrees * Math.sin(angle)];
+  }
+  const startOffsets = result.truck_routes.map(truckRoute => {
+    const start = truckRoute.coordinates[0];
+    return fanOutIfDuplicate(start.lat, start.lon);
+  });
+
+  const roadRoutes = await Promise.all(result.truck_routes.map(async (truckRoute, index) => {
+    let coordinates;
+    try {
+      coordinates = await getRoadGeometry(truckRoute.coordinates);
+    } catch (error) {
+      console.warn(`Using straight-line fallback for truck ${truckRoute.truck}:`, error.message);
+      coordinates = truckRoute.coordinates.map(c => [c.lat, c.lon]);
+    }
+    const offset = startOffsets[index];
+    const trueStart = [truckRoute.coordinates[0].lat, truckRoute.coordinates[0].lon];
+    if (offset[0] !== trueStart[0] || offset[1] !== trueStart[1]) {
+      // This truck's marker was fanned out away from the real depot
+      // coordinate — add a short straight connector at both ends so the
+      // drawn route visibly reaches the marker instead of stopping short.
+      coordinates = [offset, ...coordinates, offset];
+    }
+    return coordinates;
+  }));
+  routeLines = roadRoutes.map((coordinates, index) => L.polyline(
+    coordinates,
+    { color: routeColors[index % routeColors.length], weight: 4, opacity: 0.9, className: 'route-halo' }
+  ).addTo(map));
+  const routeBounds = L.latLngBounds(roadRoutes.flat());
+
+  // Numbered order markers per truck: Start/End (same warehouse, so one
+  // combined marker instead of two overlapping ones) then 1, 2, 3... for
+  // each stop in visiting order — makes "which warehouse does this truck
+  // start/end at, and in what order does it cover its stops" readable at
+  // a glance instead of only available as text in the route list.
+  routeLabelMarkers.forEach(m => map.removeLayer(m));
+  routeLabelMarkers = [];
+  function orderIcon(label, color, isStart) {
+    const size = isStart ? 26 : 22;
+    // The start/end marker is an inline SVG triangle rather than a CSS
+    // clip-path div — html2canvas (used by the "Download map" button)
+    // doesn't support clip-path and would render its bounding box (a
+    // square) instead, but it renders SVG shapes correctly.
+    const html = isStart
+      ? `<div style="position:relative;width:${size}px;height:${size}px;">
+           <svg width="${size}" height="${size}" viewBox="0 0 100 100" style="position:absolute;top:0;left:0;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5));">
+             <polygon points="50,6 6,94 94,94" fill="${color}" stroke="#12151a" stroke-width="3" stroke-linejoin="round"/>
+           </svg>
+           <div style="position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;padding-bottom:3px;color:#06140f;font-weight:700;font-size:10px;">${label}</div>
+         </div>`
+      : `<div class="route-order-marker" style="width:${size}px;height:${size}px;background:${color};">${label}</div>`;
+    return L.divIcon({ className: '', html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
+  }
+
+  result.truck_routes.forEach((truckRoute, index) => {
+    const color = routeColors[index % routeColors.length];
+    const coords = truckRoute.coordinates;
+    coords.forEach((c, i) => {
+      if (i === coords.length - 1) return; // same point as the start (i === 0); already marked
+      const isStart = i === 0;
+      const label = isStart ? 'S' : String(i);
+      const tooltipText = isStart
+        ? `Truck ${truckRoute.truck} — Start / End: ${truckRoute.visit_order_names[0]}`
+        : `Truck ${truckRoute.truck} — Stop ${i}: ${truckRoute.visit_order_names[i]}`;
+      const position = isStart ? startOffsets[index] : [c.lat, c.lon];
+      const marker = L.marker(position, { icon: orderIcon(label, color, isStart) })
+        .bindTooltip(tooltipText, { direction: 'top' })
+        .addTo(map);
+      routeLabelMarkers.push(marker);
+    });
+  });
+
+  // Recolor markers: served stops = green, dropped stops = red/dim, depot = gold
+  const servedNames = new Set(
+    result.truck_routes.flatMap(truckRoute => truckRoute.visit_order_names)
+  );
+  markers.forEach((marker, i) => {
+    if (stops[i].is_depot) {
+      // Manually excluded depots stay grey/dim — that's a deliberate
+      // choice, not the solver failing to reach them like a real drop.
+      marker.setStyle(stops[i].excluded
+        ? { fillColor: '#5b6472', fillOpacity: 0.5 }
+        : { fillColor: '#f5c04e', fillOpacity: 1 });
+    } else if (servedNames.has(stops[i].name) || [...servedNames].some(name => name.startsWith(`${stops[i].name} (part `))) {
+      marker.setStyle({ fillColor: '#4fd1a5' });
+    } else {
+      marker.setStyle({ fillColor: '#e0685a' });
+    }
+  });
+
+  map.fitBounds(routeBounds, { padding: [40, 40] });
+}
+
+// Initial empty state
+renderStopList();
+</script>
+
+</body>
+</html>

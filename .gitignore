@@ -1,0 +1,5 @@
+route-optimizer/backend/credentials.py
+__pycache__/
+*.pyc
+.env
+*.log
