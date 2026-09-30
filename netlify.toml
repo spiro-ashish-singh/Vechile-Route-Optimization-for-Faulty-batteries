@@ -2,9 +2,6 @@
   publish = "route-optimizer/frontend"
   functions = "netlify/functions"
 
-[functions]
-  python_runtime = "3.11"
-
 [[redirects]]
   from = "/battery-stations"
   to = "/.netlify/functions/battery_stations"
