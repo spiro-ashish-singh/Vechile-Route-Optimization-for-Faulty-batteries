@@ -19,12 +19,15 @@ import os
 
 import pandas as pd
 
-# Hardcoded to this developer's machine by default so nothing breaks
-# locally, but every path is overridable via environment variable —
-# required for running this anywhere else (another machine, a container,
-# a deploy target) once this app is no longer just a local prototype.
+# Defaults resolve relative to this repo (backend/.. is route-optimizer/,
+# and the warehouse/ + faulty_batteries.csv files live at the repo root,
+# one level above that) so this works out of the box on any machine or
+# deploy target the repo is cloned onto. Every path is still overridable
+# via environment variable, e.g. to point at a different export.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 BATTERY_CSV_PATH = os.environ.get(
-    "BATTERY_CSV_PATH", r"C:\Users\AshishKumarSingh\Downloads\route-optimizer1\faulty_batteries.csv"
+    "BATTERY_CSV_PATH", os.path.join(_REPO_ROOT, "faulty_batteries.csv")
 )
 
 # Real drop-off warehouses per country. Each file lists MULTIPLE candidate
@@ -35,13 +38,13 @@ BATTERY_CSV_PATH = os.environ.get(
 # the solver's own cost-minimization, the same way it decides fleet size.
 _WAREHOUSE_FILES = {
     "Rwanda": os.environ.get(
-        "RWANDA_WAREHOUSE_PATH", r"C:\Users\AshishKumarSingh\Downloads\route-optimizer1\warehouse\Rwanda_wh_coordinates.csv"
+        "RWANDA_WAREHOUSE_PATH", os.path.join(_REPO_ROOT, "warehouse", "Rwanda_wh_coordinates.csv")
     ),
     "Uganda": os.environ.get(
-        "UGANDA_WAREHOUSE_PATH", r"C:\Users\AshishKumarSingh\Downloads\route-optimizer1\warehouse\ug_warehouse.csv"
+        "UGANDA_WAREHOUSE_PATH", os.path.join(_REPO_ROOT, "warehouse", "ug_warehouse.csv")
     ),
     "Kenya": os.environ.get(
-        "KENYA_WAREHOUSE_PATH", r"C:\Users\AshishKumarSingh\Downloads\route-optimizer1\warehouse\Kenya_warehouse_lat_long.xlsx"
+        "KENYA_WAREHOUSE_PATH", os.path.join(_REPO_ROOT, "warehouse", "Kenya_warehouse_lat_long.xlsx")
     ),
 }
 

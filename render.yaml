@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: route-optimizer-backend
+    runtime: python
+    rootDir: route-optimizer/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: ap-south-1
+      - key: ATHENA_WORKGROUP
+        sync: false
+      - key: ATHENA_OUTPUT_S3
+        sync: false
