@@ -506,7 +506,10 @@ let markers = [];       // Leaflet marker objects, parallel to `stops`
 let routeLine = null;   // legacy combined route line reference
 let routeLines = [];
 let routeLabelMarkers = []; // numbered Start/1/2/.../End markers drawn per solve
-const BACKEND_API_URL = 'https://vechile-route-optimization-for-faulty.onrender.com';
+// Served locally (localhost / file://) -> local uvicorn backend; anywhere else -> Render.
+const BACKEND_API_URL = ['localhost', '127.0.0.1', ''].includes(window.location.hostname)
+  ? 'http://127.0.0.1:8000'
+  : 'https://vechile-route-optimization-for-faulty.onrender.com';
 const BATTERY_STATIONS_API_URL = `${BACKEND_API_URL}/battery-stations`;
 
 let tollTaxes = [];

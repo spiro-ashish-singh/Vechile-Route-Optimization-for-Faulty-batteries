@@ -29,9 +29,11 @@ def _local_credentials():
 
 _creds = _local_credentials()
 
-AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID") or getattr(_creds, "AWS_ACCESS_KEY_ID", None)
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY") or getattr(_creds, "AWS_SECRET_ACCESS_KEY", None)
-AWS_SESSION_TOKEN = os.environ.get("AWS_SESSION_TOKEN") or getattr(_creds, "AWS_SESSION_TOKEN", None)
+# `or None`: the placeholder credentials.py holds empty strings, which boto3
+# would otherwise send as a real (blank) key and fail with a misleading error.
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID") or getattr(_creds, "AWS_ACCESS_KEY_ID", None) or None
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY") or getattr(_creds, "AWS_SECRET_ACCESS_KEY", None) or None
+AWS_SESSION_TOKEN = os.environ.get("AWS_SESSION_TOKEN") or getattr(_creds, "AWS_SESSION_TOKEN", None) or None
 AWS_REGION = os.environ.get("AWS_REGION") or getattr(_creds, "AWS_REGION", "us-east-1")
 ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP") or getattr(_creds, "ATHENA_WORKGROUP", "primary")
 # Only needed if your workgroup doesn't already have a default query
