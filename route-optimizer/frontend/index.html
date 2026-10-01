@@ -197,7 +197,9 @@
     font-weight: 700;
     box-shadow: 0 4px 14px rgba(69, 214, 168, 0.22);
   }
-  #load-example-btn, #load-battery-btn { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); }
+  #load-example-btn, #load-battery-btn, #load-battery-csv-btn { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); }
+  input[type="file"] { width: 100%; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+  input[type="file"]::file-selector-button { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); border-radius: 6px; padding: 5px 10px; margin-right: 8px; cursor: pointer; font-family: inherit; }
   #clear-btn { background: transparent; border: 1px solid var(--panel-border); color: var(--text-dim); font-size: 12px; padding: 8px; margin-top: 8px; }
 
   .mode-hint { font-size: 11.5px; color: var(--text-faint); margin: -4px 0 12px; line-height: 1.5; }
@@ -423,6 +425,13 @@
       <option value="Kenya">Kenya</option>
     </select>
     <button id="load-battery-btn" type="button">Load battery stations</button>
+
+    <div class="mode-hint" style="margin-top: 10px;">Or upload your own CSV export for this country instead of pulling from the database:</div>
+    <label for="stations-csv-input" style="margin-top: 6px;">Stations CSV (required) &mdash; columns: country, source_location_name, source_location_id, latitude, longitude, counting</label>
+    <input type="file" id="stations-csv-input" accept=".csv">
+    <label for="warehouse-csv-input" style="margin-top: 6px;">Warehouse CSV (optional) &mdash; columns: Location_ID, Location_Name, latitude, longitude. Falls back to the built-in warehouse list if left empty.</label>
+    <input type="file" id="warehouse-csv-input" accept=".csv">
+    <button id="load-battery-csv-btn" type="button" style="margin-top: 8px;">Load from uploaded CSV</button>
   </div>
 
   <div class="section">
@@ -887,6 +896,50 @@ document.getElementById('load-battery-btn').addEventListener('click', async () =
   }
 });
 
+// =============================================================
+// LOAD BATTERY STATIONS FROM UPLOADED CSV (same shape/response as
+// /battery-stations, but built from user-supplied files instead of
+// Athena or the bundled CSV export)
+// =============================================================
+document.getElementById('load-battery-csv-btn').addEventListener('click', async () => {
+  const country = document.getElementById('battery-country').value;
+  const stationsFile = document.getElementById('stations-csv-input').files[0];
+  const warehouseFile = document.getElementById('warehouse-csv-input').files[0];
+  if (!stationsFile) {
+    setStatus('Choose a stations CSV file first.', true);
+    return;
+  }
+  setStatus(`Loading ${country} battery stations from uploaded CSV...`, false);
+  try {
+    const form = new FormData();
+    form.append('country', country);
+    form.append('stations_csv', stationsFile);
+    if (warehouseFile) form.append('warehouse_csv', warehouseFile);
+
+    const res = await fetch(`${BACKEND_API_URL}/battery-stations/upload`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `Server returned ${res.status}`);
+    }
+    const data = await res.json();
+
+    clearAllStops();
+    data.stops.forEach(s => addStop(s));
+    document.getElementById('fuel-cost').value = data.road_cost_per_km.toFixed(3);
+
+    const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
+    map.fitBounds(bounds, { padding: [40, 40] });
+
+    let message = `Loaded ${data.stops.length - 1} ${country} battery stations from uploaded CSV.`;
+    if (data.skipped.length > 0) {
+      message += ` ${data.skipped.length} station(s) skipped (no coordinates).`;
+    }
+    setStatus(message, false);
+  } catch (err) {
+    setStatus(`Could not load uploaded CSV. (${err.message})`, true);
+  }
+});
+
 document.getElementById('clear-btn').addEventListener('click', clearAllStops);
 
 // =============================================================
@@ -1136,9 +1189,18 @@ async function renderResult(result) {
       const tooltipText = isStart
         ? `Truck ${truckRoute.truck} — Start / End: ${truckRoute.visit_order_names[0]}`
         : `Truck ${truckRoute.truck} — Stop ${i}: ${truckRoute.visit_order_names[i]}`;
+      // Clicking a solved-route marker previously only showed this hover
+      // tooltip (name only) — the battery count from the original stop
+      // popup was hidden underneath it, since this marker is drawn on top.
+      // bindPopup() restores that on click, using truckRoute.boxes[i]
+      // (the per-stop demand the backend already computed for this truck).
+      const popupText = isStart
+        ? `<b>${truckRoute.visit_order_names[0]}</b><br>Depot (Start/End)`
+        : `<b>${truckRoute.visit_order_names[i]}</b><br>${truckRoute.boxes[i]} batteries`;
       const position = isStart ? startOffsets[index] : [c.lat, c.lon];
       const marker = L.marker(position, { icon: orderIcon(label, color, isStart) })
         .bindTooltip(tooltipText, { direction: 'top' })
+        .bindPopup(popupText)
         .addTo(map);
       routeLabelMarkers.push(marker);
     });

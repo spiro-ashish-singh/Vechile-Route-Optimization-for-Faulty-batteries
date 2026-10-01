@@ -15,6 +15,7 @@ longitude, counting), same output stop shape either way.
 """
 
 import csv
+import io
 import os
 
 import pandas as pd
@@ -62,21 +63,13 @@ def _is_missing(value):
     return False
 
 
-def load_warehouses(country):
+def _parse_warehouse_rows(rows):
     """
-    Loads every real candidate drop-off warehouse for a country, from
-    whichever file/format that country's data happens to be in (each one
-    uses different column names, and Kenya's is an .xlsx, not a .csv).
-    Returns a list of {name, lat, lon, demand: 0} dicts, test/placeholder
-    rows excluded (see _is_real_station).
+    Shared by load_warehouses() (reads a known per-country file) and
+    load_warehouses_from_csv_text() (an uploaded CSV) — both just need
+    to turn a list of row-dicts into {name, lat, lon, demand: 0} dicts,
+    test/placeholder and swap-station rows excluded (see _is_real_station).
     """
-    path = _WAREHOUSE_FILES[country]
-    if path.lower().endswith(".xlsx"):
-        rows = pd.read_excel(path).to_dict("records")
-    else:
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
-
     warehouses = []
     for row in rows:
         # The ID column differs per file: Rwanda/Uganda use "Location_ID",
@@ -97,6 +90,35 @@ def load_warehouses(country):
         if _is_missing(lat) or _is_missing(lon):
             continue
         warehouses.append({"name": str(name), "lat": float(lat), "lon": float(lon), "demand": 0})
+    return warehouses
+
+
+def load_warehouses(country):
+    """
+    Loads every real candidate drop-off warehouse for a country, from
+    whichever file/format that country's data happens to be in (each one
+    uses different column names, and Kenya's is an .xlsx, not a .csv).
+    Returns a list of {name, lat, lon, demand: 0} dicts, test/placeholder
+    rows excluded (see _is_real_station).
+    """
+    path = _WAREHOUSE_FILES[country]
+    if path.lower().endswith(".xlsx"):
+        rows = pd.read_excel(path).to_dict("records")
+    else:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+    return _parse_warehouse_rows(rows)
+
+
+def load_warehouses_from_csv_text(csv_text):
+    """
+    Same output as load_warehouses(), but parses CSV text already in
+    memory (e.g. an uploaded file) instead of reading a known path —
+    same column conventions (Location_ID/name, Location_Name/warehouse,
+    latitude, longitude).
+    """
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    return _parse_warehouse_rows(rows)
     return warehouses
 
 # Real fuel prices per country (USD/liter). Converted to $/km using a
@@ -189,6 +211,15 @@ def faulty_battery_stations_from_csv(csv_path, country=None):
     """
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         rows = [row for row in csv.DictReader(f) if country is None or row["country"] == country]
+    return _rows_to_stations(rows)
+
+
+def faulty_battery_stations_from_csv_text(csv_text, country=None):
+    """
+    Same output as faulty_battery_stations_from_csv(), but parses CSV
+    text already in memory (e.g. an uploaded file) instead of a path.
+    """
+    rows = [row for row in csv.DictReader(io.StringIO(csv_text)) if country is None or row["country"] == country]
     return _rows_to_stations(rows)
 
 

@@ -31,7 +31,9 @@ auto-generates an interactive API tester there, which is a great way
 to try this out even before the frontend map exists.
 """
 
-from fastapi import FastAPI, HTTPException
+import csv
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, confloat
 from typing import List, Optional
@@ -201,6 +203,60 @@ def get_battery_stations(country: str = "Rwanda"):
 
     return {
         "data_source": data_source,
+        "stops": stops,
+        "skipped": skipped,
+        "country": country,
+        "road_cost_per_km": road_cost_per_km,
+        "warehouse_count": len(depot_stops),
+    }
+
+
+@app.post("/battery-stations/upload")
+async def upload_battery_stations(
+    country: str = Form(...),
+    stations_csv: UploadFile = File(..., description="Columns: country, source_location_name, source_location_id, latitude, longitude, counting"),
+    warehouse_csv: Optional[UploadFile] = File(None, description="Optional. Columns: Location_ID/name, Location_Name/warehouse, latitude, longitude. Falls back to this country's built-in warehouse file if omitted."),
+):
+    """
+    Same response shape as GET /battery-stations, but built from
+    user-uploaded CSV files instead of Athena or the bundled CSV export —
+    for feeding in a fresher or different dataset without redeploying.
+    """
+    from battery_pickups import (
+        faulty_battery_stations_from_csv_text,
+        load_warehouses,
+        load_warehouses_from_csv_text,
+        FUEL_PRICE_USD_PER_LITER,
+        FUEL_CONSUMPTION_L_PER_KM,
+    )
+
+    if country not in FUEL_PRICE_USD_PER_LITER:
+        raise HTTPException(status_code=400, detail=f"Unknown country '{country}'. Choose one of: {', '.join(FUEL_PRICE_USD_PER_LITER)}")
+
+    try:
+        stations_text = (await stations_csv.read()).decode("utf-8-sig")
+        stations, skipped = faulty_battery_stations_from_csv_text(stations_text, country=country)
+
+        if warehouse_csv is not None:
+            warehouse_text = (await warehouse_csv.read()).decode("utf-8-sig")
+            warehouses = load_warehouses_from_csv_text(warehouse_text)
+        else:
+            warehouses = load_warehouses(country)
+    except (csv.Error, UnicodeDecodeError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse uploaded CSV: {e}")
+
+    depot_stops = [
+        {**w, "small_boxes": 0, "mid_boxes": 0, "large_boxes": 0, "is_depot": True}
+        for w in warehouses
+    ]
+    stops = depot_stops + [
+        {**s, "small_boxes": 0, "mid_boxes": s["demand"], "large_boxes": 0}
+        for s in stations
+    ]
+    road_cost_per_km = FUEL_PRICE_USD_PER_LITER[country] * FUEL_CONSUMPTION_L_PER_KM
+
+    return {
+        "data_source": "csv-upload",
         "stops": stops,
         "skipped": skipped,
         "country": country,

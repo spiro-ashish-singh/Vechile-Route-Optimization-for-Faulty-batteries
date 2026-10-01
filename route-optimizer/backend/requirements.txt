@@ -5,3 +5,4 @@ ortools
 boto3
 pandas
 openpyxl
+python-multipart
