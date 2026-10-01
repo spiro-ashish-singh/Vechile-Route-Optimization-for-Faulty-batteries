@@ -89,7 +89,13 @@ def _parse_warehouse_rows(rows):
         lon = row.get("longitude", row.get("Longitude"))
         if _is_missing(lat) or _is_missing(lon):
             continue
-        warehouses.append({"name": str(name), "lat": float(lat), "lon": float(lon), "demand": 0})
+        warehouses.append({
+            "name": str(name),
+            "source_location_id": str(location_id) or None,
+            "lat": float(lat),
+            "lon": float(lon),
+            "demand": 0,
+        })
     return warehouses
 
 

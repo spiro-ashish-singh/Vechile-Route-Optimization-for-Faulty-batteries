@@ -70,6 +70,7 @@ app.add_middleware(
 
 class Stop(BaseModel):
     name: str
+    source_location_id: Optional[str] = Field(None, description="Station/warehouse code, echoed back per stop in truck_routes")
     lat: float
     lon: float
     demand: Optional[int] = Field(None, ge=0, description="Legacy total box count; calculated from size quantities when supplied")
@@ -414,6 +415,7 @@ def solve(request: SolveRequest):
             "truck": index + 1,
             "visit_order": route_stops,
             "visit_order_names": [stops_as_dicts[i]["name"] for i in route_stops],
+            "visit_order_codes": [stops_as_dicts[i].get("source_location_id") for i in route_stops],
             "boxes": [demands[i] for i in route_stops],
             "total_batteries_picked": sum(demands[i] for i in route_stops if demands[i] > 0),
             "distance_km": round(truck_distance_km, 1),

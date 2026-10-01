@@ -717,9 +717,25 @@ document.getElementById('add-toll-btn').addEventListener('click', () => {
   inputs[inputs.length - 1].focus();
 });
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// Some warehouse files have no separate name column, so the name already
+// IS the code — skip the code line then rather than repeating it.
+function stationCodeOf(name, code) {
+  return code && code !== name ? code : '';
+}
+
+function batteryCountText(count) {
+  return `${count} ${count === 1 ? 'battery' : 'batteries'}`;
+}
+
 function popupHtmlFor(stop) {
-  const bodyLine = stop.is_depot ? 'Depot' : `${stop.demand} batteries`;
-  return `<b>${stop.name}</b><br>${bodyLine}<br><button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
+  const bodyLine = stop.is_depot ? 'Depot' : batteryCountText(stop.demand);
+  const code = stationCodeOf(stop.name, stop.source_location_id);
+  const codeLine = code ? `Code: ${escapeHtml(code)}<br>` : '';
+  return `<b>${escapeHtml(stop.name)}</b><br>${codeLine}${bodyLine}<br><button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
 }
 
 function addStop(stop) {
@@ -1186,17 +1202,17 @@ async function renderResult(result) {
       if (i === coords.length - 1) return; // same point as the start (i === 0); already marked
       const isStart = i === 0;
       const label = isStart ? 'S' : String(i);
+      // These markers sit on top of the original stop markers, hiding their
+      // popups — so both the hover tooltip and the click popup carry the
+      // station code and battery count themselves (boxes[i] is the per-stop
+      // demand the backend computed for this truck).
+      const name = escapeHtml(truckRoute.visit_order_names[i]);
+      const code = escapeHtml(stationCodeOf(truckRoute.visit_order_names[i], truckRoute.visit_order_codes?.[i]));
+      const batteries = batteryCountText(truckRoute.boxes[i]);
       const tooltipText = isStart
-        ? `Truck ${truckRoute.truck} — Start / End: ${truckRoute.visit_order_names[0]}`
-        : `Truck ${truckRoute.truck} — Stop ${i}: ${truckRoute.visit_order_names[i]}`;
-      // Clicking a solved-route marker previously only showed this hover
-      // tooltip (name only) — the battery count from the original stop
-      // popup was hidden underneath it, since this marker is drawn on top.
-      // bindPopup() restores that on click, using truckRoute.boxes[i]
-      // (the per-stop demand the backend already computed for this truck).
-      const popupText = isStart
-        ? `<b>${truckRoute.visit_order_names[0]}</b><br>Depot (Start/End)`
-        : `<b>${truckRoute.visit_order_names[i]}</b><br>${truckRoute.boxes[i]} batteries`;
+        ? `Truck ${truckRoute.truck} — Start / End: ${name}${code ? ` (${code})` : ''}`
+        : `Truck ${truckRoute.truck} — Stop ${i}: ${name}${code ? ` (${code})` : ''} — ${batteries}`;
+      const popupText = `<b>${name}</b><br>${code ? `Code: ${code}<br>` : ''}${isStart ? 'Depot (Start/End)' : batteries}`;
       const position = isStart ? startOffsets[index] : [c.lat, c.lon];
       const marker = L.marker(position, { icon: orderIcon(label, color, isStart) })
         .bindTooltip(tooltipText, { direction: 'top' })
