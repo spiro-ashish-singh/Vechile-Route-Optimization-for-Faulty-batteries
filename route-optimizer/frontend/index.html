@@ -9,9 +9,12 @@
      need to install anything for the map itself. -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<!-- html2canvas: rasterizes the live map (tiles, routes, markers) into a
-     canvas so it can be saved as a PNG via the download-map button. -->
+<!-- html2canvas rasterizes the map (tiles, routes, markers); jsPDF +
+     autotable assemble those images and the route tables into the
+     downloadable PDF route report. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -508,18 +511,18 @@ mapToolsControl.onAdd = () => {
   resetButton.innerHTML = '&#8962;';
   resetButton.addEventListener('click', e => { e.preventDefault(); map.setView(defaultMapCenter, 12); });
 
-  // Rasterizes the current map view (tiles, route lines, markers) into a
-  // PNG and triggers a browser download. Both basemaps (TomTom, Esri) send
-  // Access-Control-Allow-Origin: *, and the tile layers above are set to
-  // crossOrigin:true to match, so html2canvas can actually read the tile
-  // pixels instead of hitting a tainted-canvas security error.
+  // Builds a PDF route report (summary, overview map, per-truck maps and
+  // stop tables). Both basemaps (TomTom, Esri) send
+  // Access-Control-Allow-Origin: *, and the tile layers below are set to
+  // crossOrigin:true to match, so html2canvas can read the tile pixels
+  // instead of hitting a tainted-canvas security error.
   const downloadButton = L.DomUtil.create('a', '', container);
   downloadButton.href = '#';
-  downloadButton.title = 'Download map as image';
+  downloadButton.title = 'Download route report (PDF)';
   downloadButton.innerHTML = '&#8681;'; // down arrow
   downloadButton.addEventListener('click', e => {
     e.preventDefault();
-    if (!downloadButton.classList.contains('busy')) downloadMapImage(downloadButton);
+    if (!downloadButton.classList.contains('busy')) downloadRouteReport(downloadButton);
   });
 
   L.DomEvent.disableClickPropagation(container);
@@ -527,35 +530,198 @@ mapToolsControl.onAdd = () => {
 };
 mapToolsControl.addTo(map);
 
-async function downloadMapImage(button) {
+let lastSolveResult = null;
+let currentDatasetLabel = 'Manual stops';
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function waitForTiles(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  await sleep(300); // let Leaflet request tiles for the new view
+  while (Date.now() < deadline) {
+    let layerLoading = false;
+    map.eachLayer(layer => { if (layer instanceof L.GridLayer && layer.isLoading()) layerLoading = true; });
+    const pendingImages = [...document.querySelectorAll('#map img.leaflet-tile')].filter(img => !img.complete);
+    if (!layerLoading && pendingImages.length === 0) break;
+    await sleep(200);
+  }
+  // Leaflet fades freshly loaded tiles in from opacity 0 — capturing
+  // mid-fade leaves blank grey squares in the image.
+  await sleep(500);
+}
+
+// truckIndex null shows every truck; otherwise only that truck's line and
+// numbered markers are visible, so its own map page isn't cluttered.
+function showOnlyTruck(truckIndex) {
+  routeLines.forEach((line, i) => line.setStyle({ opacity: truckIndex === null || i === truckIndex ? 0.9 : 0 }));
+  routeLabelMarkers.forEach(marker => {
+    const el = marker.getElement();
+    if (el) el.style.display = truckIndex === null || marker.options.truckIndex === truckIndex ? '' : 'none';
+  });
+}
+
+async function captureMap(bounds) {
+  map.closePopup();
+  map.fitBounds(bounds, { padding: [40, 40], animate: false });
+  await waitForTiles();
+  return html2canvas(document.getElementById('map'), { useCORS: true, logging: false, backgroundColor: '#ffffff', scale: 1.5 });
+}
+
+function addMapImage(doc, canvas, y, heading = '') {
+  const margin = 14;
+  const headingSpace = heading ? 7 : 0;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let width = pageWidth - 2 * margin;
+  let height = width * canvas.height / canvas.width;
+  const maxHeight = pageHeight * 0.55;
+  if (height > maxHeight) {
+    width = width * maxHeight / height;
+    height = maxHeight;
+  }
+  if (y + headingSpace + height > pageHeight - margin) {
+    doc.addPage();
+    y = 20;
+  }
+  if (heading) {
+    doc.setFontSize(12);
+    doc.text(heading, margin, y + 4);
+    y += headingSpace;
+  }
+  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', (pageWidth - width) / 2, y, width, height);
+  return y + height;
+}
+
+async function downloadRouteReport(button) {
+  if (!lastSolveResult || routeLines.length === 0) {
+    setStatus('Solve a route first - the report covers the solved routes.', true);
+    return;
+  }
+  const result = lastSolveResult;
   const originalHtml = button.innerHTML;
   button.innerHTML = '&hellip;';
   button.classList.add('busy');
-  try {
-    // Leaflet's own zoom/attribution/layer controls shouldn't appear in
-    // the saved image — hide them for the capture, then restore them.
-    const controlsToHide = document.querySelectorAll('.leaflet-control-container > *');
-    controlsToHide.forEach(el => { el.style.visibility = 'hidden'; });
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  // Leaflet's own zoom/attribution/layer controls shouldn't appear in the
+  // map images — hide them for the captures, then restore them.
+  const controlsToHide = document.querySelectorAll('.leaflet-control-container > *');
+  controlsToHide.forEach(el => { el.style.visibility = 'hidden'; });
 
-    const mapElement = document.getElementById('map');
-    const canvas = await html2canvas(mapElement, {
-      useCORS: true,
-      logging: false,
-      backgroundColor: null,
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const margin = 14;
+    const headStyles = { fillColor: [18, 21, 26] };
+
+    doc.setFontSize(18);
+    doc.text('Faulty-battery pickup route report', margin, 20);
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, margin, 27);
+    doc.text(`Dataset: ${currentDatasetLabel}`, margin, 32);
+    doc.setTextColor(0);
+
+    const truckCapacity = parseInt(document.getElementById('capacity').value);
+    const totalKm = result.truck_routes.reduce((sum, t) => sum + t.distance_km, 0);
+    const totalHours = result.truck_routes.reduce((sum, t) => sum + t.driving_hours, 0);
+    doc.autoTable({
+      startY: 37,
+      head: [['Summary', '']],
+      body: [
+        ['Trucks needed', String(result.trucks_needed)],
+        ['Batteries collected', `${result.total_cartons_picked} / ${truckCapacity * result.trucks_needed} (${(result.fill_ratio * 100).toFixed(1)}% fill)`],
+        ['Fill target', result.meets_fill_target ? 'Met' : 'Not reached'],
+        ['Stops served', String(result.num_stops_served)],
+        ['Stops dropped', String(result.dropped_stops.length)],
+        ['Total distance', `${totalKm.toFixed(1)} km`],
+        ['Total driving time', `${totalHours.toFixed(2)} h`],
+        ['Fuel cost', `$${result.fuel_cost.toFixed(2)}`],
+        ['Toll tax', `$${result.toll_tax_total.toFixed(2)}`],
+        ['Total operating cost', `$${result.total_operating_cost.toFixed(2)}`],
+        ['Routing engine', describeRoutingAlgorithm(result.routing_algorithm)],
+      ],
+      theme: 'grid',
+      headStyles,
+      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
+      margin: { left: margin, right: margin },
     });
 
-    controlsToHide.forEach(el => { el.style.visibility = ''; });
+    setStatus('Building report: overview map...', false);
+    showOnlyTruck(null);
+    const overview = await captureMap(L.featureGroup(routeLines).getBounds());
+    addMapImage(doc, overview, doc.lastAutoTable.finalY + 6, 'All routes');
 
-    const link = document.createElement('a');
+    for (let index = 0; index < result.truck_routes.length; index++) {
+      const truckRoute = result.truck_routes[index];
+      setStatus(`Building report: truck ${index + 1} of ${result.truck_routes.length}...`, false);
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text(`Truck ${truckRoute.truck}`, margin, 20);
+      doc.setFontSize(10);
+      doc.setTextColor(100);
+      const days = truckRoute.estimated_days > 1 ? ` | ~${truckRoute.estimated_days}-day trip` : '';
+      doc.text(
+        `${truckRoute.total_batteries_picked} batteries | ${truckRoute.distance_km} km | $${truckRoute.fuel_cost.toFixed(2)} fuel | ${truckRoute.driving_hours.toFixed(2)} h driving${days}`,
+        margin, 26,
+      );
+      doc.setTextColor(0);
+
+      showOnlyTruck(index);
+      const canvas = await captureMap(routeLines[index].getBounds());
+      const mapBottom = addMapImage(doc, canvas, 30);
+
+      const lastIndex = truckRoute.visit_order_names.length - 1;
+      let load = 0;
+      const rows = truckRoute.visit_order_names.map((name, i) => {
+        const boxes = truckRoute.boxes[i];
+        load += boxes;
+        const isEndpoint = (i === 0 || i === lastIndex) && boxes === 0;
+        return [
+          i === 0 ? 'Start' : i === lastIndex ? 'End' : String(i),
+          name,
+          truckRoute.visit_order_codes?.[i] || '',
+          isEndpoint ? 'Depot' : String(boxes),
+          String(load),
+        ];
+      });
+      doc.autoTable({
+        startY: mapBottom + 6,
+        head: [['Stop', 'Station', 'Code', 'Batteries', 'Load after stop']],
+        body: rows,
+        theme: 'striped',
+        headStyles,
+        margin: { left: margin, right: margin },
+      });
+    }
+
+    if (result.dropped_stop_names.length > 0) {
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text('Dropped stops (not served by any truck)', margin, 20);
+      doc.autoTable({
+        startY: 26,
+        head: [['Station', 'Code', 'Batteries']],
+        body: result.dropped_stop_names.map(name => {
+          const stop = stops.find(s => s.name === name);
+          return [name, stop?.source_location_id || '', stop ? String(stop.demand) : ''];
+        }),
+        theme: 'striped',
+        headStyles,
+        margin: { left: margin, right: margin },
+      });
+    }
+
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    link.download = `route-map-${timestamp}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-    setStatus('Map image downloaded.', false);
+    doc.save(`route-report-${timestamp}.pdf`);
+    setStatus('Route report downloaded.', false);
   } catch (error) {
-    console.error('Map download failed:', error);
-    setStatus(`Could not download the map image: ${error.message}`, true);
+    console.error('Route report failed:', error);
+    setStatus(`Could not build the route report: ${error.message}`, true);
   } finally {
+    showOnlyTruck(null);
+    map.setView(savedCenter, savedZoom, { animate: false });
+    controlsToHide.forEach(el => { el.style.visibility = ''; });
     button.innerHTML = originalHtml;
     button.classList.remove('busy');
   }
@@ -791,6 +957,8 @@ function clearAllStops() {
   routeLines = [];
   routeLabelMarkers.forEach(m => map.removeLayer(m));
   routeLabelMarkers = [];
+  lastSolveResult = null;
+  currentDatasetLabel = 'Manual stops';
   renderStopList();
   document.getElementById('results').style.display = 'none';
 }
@@ -874,6 +1042,7 @@ document.getElementById('load-example-btn').addEventListener('click', async () =
     const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
     map.fitBounds(bounds, { padding: [40, 40] });
 
+    currentDatasetLabel = 'Nairobi example stops';
     setStatus(`Loaded ${data.stops.length} example stops (Nairobi).`, false);
   } catch (err) {
     setStatus(`Could not connect to the route service. Is the backend running? (${err.message})`, true);
@@ -902,6 +1071,7 @@ document.getElementById('load-battery-btn').addEventListener('click', async () =
     const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
     map.fitBounds(bounds, { padding: [40, 40] });
 
+    currentDatasetLabel = `${country} faulty-battery stations (${data.data_source === 'athena' ? 'live database' : 'CSV export - database unavailable'})`;
     let message = `Loaded ${data.stops.length - 1} ${country} battery stations (depot is a placeholder).`;
     if (data.skipped.length > 0) {
       message += ` ${data.skipped.length} station(s) skipped (no coordinates).`;
@@ -946,6 +1116,7 @@ document.getElementById('load-battery-csv-btn').addEventListener('click', async 
     const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
     map.fitBounds(bounds, { padding: [40, 40] });
 
+    currentDatasetLabel = `${country} faulty-battery stations (uploaded CSV: ${stationsFile.name})`;
     let message = `Loaded ${data.stops.length - 1} ${country} battery stations from uploaded CSV.`;
     if (data.skipped.length > 0) {
       message += ` ${data.skipped.length} station(s) skipped (no coordinates).`;
@@ -1214,7 +1385,7 @@ async function renderResult(result) {
         : `Truck ${truckRoute.truck} — Stop ${i}: ${name}${code ? ` (${code})` : ''} — ${batteries}`;
       const popupText = `<b>${name}</b><br>${code ? `Code: ${code}<br>` : ''}${isStart ? 'Depot (Start/End)' : batteries}`;
       const position = isStart ? startOffsets[index] : [c.lat, c.lon];
-      const marker = L.marker(position, { icon: orderIcon(label, color, isStart) })
+      const marker = L.marker(position, { icon: orderIcon(label, color, isStart), truckIndex: index })
         .bindTooltip(tooltipText, { direction: 'top' })
         .bindPopup(popupText)
         .addTo(map);
@@ -1241,6 +1412,7 @@ async function renderResult(result) {
   });
 
   map.fitBounds(routeBounds, { padding: [40, 40] });
+  lastSolveResult = result;
 }
 
 // Initial empty state
