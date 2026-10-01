@@ -32,10 +32,11 @@ to try this out even before the frontend map exists.
 """
 
 import csv
+import os
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, confloat
 from typing import List, Optional
 
@@ -44,6 +45,7 @@ from stops_and_cost import (
     distance_km_from_matrix_cost, fuel_cost_from_matrix_cost,
 )
 from cvrp_solver import solve_cvrp, solve_fleet
+from regions import LEVELS, boundary_path, tag_regions
 
 
 app = FastAPI(title="Truck Route + Capacity Optimizer")
@@ -73,6 +75,8 @@ class Stop(BaseModel):
     name: str
     source_location_id: Optional[str] = Field(None, description="Station/warehouse code, echoed back per stop in truck_routes")
     country: Optional[str] = None
+    region: Optional[str] = None
+    district: Optional[str] = None
     lat: float
     lon: float
     demand: Optional[int] = Field(None, ge=0, description="Legacy total box count; calculated from size quantities when supplied")
@@ -97,6 +101,8 @@ class SolveRequest(BaseModel):
     max_driving_hours: float = Field(8.0, gt=0, le=24, description="Maximum driving time allowed per truck per day")
     max_trip_days: int = Field(1, ge=1, le=14, description="Max days a single truck's trip may span before it must return to depot (driving budget = max_driving_hours * max_trip_days)")
     toll_taxes: List[confloat(ge=0)] = Field(default_factory=list, description="Fixed tax amount for each toll used on the route")
+    excluded_regions: List[str] = Field(default_factory=list, description="Level-1 areas (county/province/region); stops whose region is listed are removed before routing")
+    excluded_districts: List[str] = Field(default_factory=list, description="Level-2 areas (sub-county/district); stops whose district is listed are removed before routing")
 
 
 class SolveResponse(BaseModel):
@@ -117,6 +123,7 @@ class SolveResponse(BaseModel):
     truck_routes: List[dict]
     route_coordinates: List[dict]  # [{lat, lon}, ...] in visiting order, for drawing on the map
     dropped_stop_details: List[dict]
+    region_excluded_stops: List[dict]  # stops removed up front because they lie in an excluded region/district
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +210,7 @@ def get_battery_stations(country: str = "Rwanda"):
         {**s, "small_boxes": 0, "mid_boxes": s["demand"], "large_boxes": 0}
         for s in stations
     ]
+    tag_regions(stops, country)
     road_cost_per_km = FUEL_PRICE_USD_PER_LITER[country] * FUEL_CONSUMPTION_L_PER_KM
 
     return {
@@ -257,6 +265,7 @@ async def upload_battery_stations(
         {**s, "small_boxes": 0, "mid_boxes": s["demand"], "large_boxes": 0}
         for s in stations
     ]
+    tag_regions(stops, country)
     road_cost_per_km = FUEL_PRICE_USD_PER_LITER[country] * FUEL_CONSUMPTION_L_PER_KM
 
     return {
@@ -267,6 +276,14 @@ async def upload_battery_stations(
         "road_cost_per_km": road_cost_per_km,
         "warehouse_count": len(depot_stops),
     }
+
+
+@app.get("/regions/{country}/{level}")
+def get_region_boundaries(country: str, level: int):
+    """GeoJSON outlines of a country's level-1 (region) or level-2 (district) areas, for shading excluded areas on the map."""
+    if not country.isalpha() or level not in LEVELS or not os.path.exists(boundary_path(country, level)):
+        raise HTTPException(status_code=404, detail=f"No level-{level} boundaries for '{country}'.")
+    return FileResponse(boundary_path(country, level), media_type="application/geo+json", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.post("/solve", response_model=SolveResponse)
@@ -280,11 +297,28 @@ def solve(request: SolveRequest):
     Validation: the first stop in the list MUST be the depot. We
     enforce demand=0 for it (a depot doesn't have cartons to pick up).
     """
-    stops = request.stops
-
     def stop_demand(stop: Stop) -> int:
         size_total = stop.small_boxes + stop.mid_boxes + stop.large_boxes
         return size_total if size_total > 0 or stop.demand is None else stop.demand
+
+    excluded_regions = set(request.excluded_regions)
+    excluded_districts = set(request.excluded_districts)
+
+    def in_excluded_area(stop: Stop) -> bool:
+        return stop.region in excluded_regions or stop.district in excluded_districts
+
+    stops = [stop for stop in request.stops if not in_excluded_area(stop)]
+    region_excluded_stops = [
+        {
+            "name": stop.name, "code": stop.source_location_id, "is_depot": stop.is_depot,
+            "region": stop.region, "district": stop.district, "batteries": stop_demand(stop),
+        }
+        for stop in request.stops if in_excluded_area(stop)
+    ]
+    if region_excluded_stops and not any(stop.is_depot for stop in stops):
+        raise HTTPException(status_code=400, detail="Every warehouse is inside an excluded region/district - keep at least one warehouse's area included.")
+    if len(stops) < 2:
+        raise HTTPException(status_code=400, detail="No pickup stations are left after excluding the selected regions/districts.")
 
     demands = [stop_demand(stop) for stop in stops]
 
@@ -438,6 +472,8 @@ def solve(request: SolveRequest):
                 "name": stop_data["name"],
                 "code": stop_data.get("source_location_id"),
                 "country": stop_data.get("country"),
+                "region": stop_data.get("region"),
+                "district": stop_data.get("district"),
                 "is_depot": i in depot_index_set,
                 "small_boxes": stop_data.get("small_boxes", 0),
                 "mid_boxes": stop_data.get("mid_boxes", 0),
@@ -513,6 +549,8 @@ def solve(request: SolveRequest):
                 "name": stops[i].name,
                 "code": stops[i].source_location_id,
                 "country": stops[i].country,
+                "region": stops[i].region,
+                "district": stops[i].district,
                 "small_boxes": stops[i].small_boxes,
                 "mid_boxes": stops[i].mid_boxes,
                 "large_boxes": stops[i].large_boxes,
@@ -520,6 +558,7 @@ def solve(request: SolveRequest):
             }
             for i in dropped_original_indices
         ],
+        region_excluded_stops=region_excluded_stops,
     )
 
 

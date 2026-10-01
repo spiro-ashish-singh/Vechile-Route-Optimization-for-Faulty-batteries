@@ -229,6 +229,16 @@
   .depot-use-toggle input[type="checkbox"] { width: 13px; height: 13px; margin: 0; accent-color: var(--depot); cursor: pointer; }
   .stop-row.excluded { opacity: 0.5; }
   .stop-row.excluded .depot-tag { color: var(--text-faint); }
+  .stop-row .area-tag { color: var(--danger); font-size: 10px; letter-spacing: 0.08em; font-weight: 700; }
+
+  .area-list { max-height: 230px; overflow-y: auto; border: 1px solid var(--panel-border); border-radius: 8px; padding: 4px; margin-top: 8px; }
+  .area-row { display: flex; align-items: center; gap: 8px; padding: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; border-radius: 6px; margin: 0; }
+  .area-row:hover { background: var(--panel-raised); }
+  .area-row input[type="checkbox"] { width: 13px; height: 13px; margin: 0; accent-color: var(--danger); cursor: pointer; flex: none; }
+  .area-row .area-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .area-row .area-counts { margin-left: auto; color: var(--text-faint); font-size: 11px; white-space: nowrap; }
+  .area-row.checked .area-name { color: var(--danger); text-decoration: line-through; }
+  #area-search { margin-top: 8px; }
   .box-quantities { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .box-field { display: flex; flex-direction: column; gap: 4px; }
   .box-field span { color: var(--text-faint); font-size: 10px; }
@@ -429,6 +439,22 @@
     <button id="load-battery-csv-btn" type="button" style="margin-top: 8px;">Load from uploaded CSV</button>
   </div>
 
+  <div class="section" id="area-filter" style="display:none;">
+    <div class="section-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M5 5l14 14"/></svg>
+      Exclude areas
+    </div>
+    <div class="mode-hint">Tick an area to keep every station and warehouse inside it out of the route.</div>
+    <label for="area-level">Area level</label>
+    <select id="area-level">
+      <option value="1">Region (county / province)</option>
+      <option value="2">District (sub-county / district)</option>
+    </select>
+    <input type="text" id="area-search" placeholder="Search areas...">
+    <div class="area-list" id="area-list"></div>
+    <div class="mode-hint" id="area-summary" style="margin: 8px 0 0;"></div>
+  </div>
+
   <div class="section">
     <button id="solve-btn">Solve route</button>
     <div id="status-msg"></div>
@@ -509,6 +535,7 @@ mapToolsControl.onAdd = () => {
 mapToolsControl.addTo(map);
 
 let lastSolveResult = null;
+let lastSolveExclusions = { regions: [], districts: [] };
 let currentDatasetLabel = 'Manual stops';
 
 // The report is built server-side (report_excel.py) from the last solve
@@ -535,6 +562,8 @@ async function downloadExcelReport() {
           max_driving_hours: parseFloat(document.getElementById('max-driving-hours').value),
           max_trip_days: parseInt(document.getElementById('max-trip-days').value) || 1,
           road_cost_per_km: parseFloat(document.getElementById('fuel-cost').value),
+          excluded_regions: lastSolveExclusions.regions,
+          excluded_districts: lastSolveExclusions.districts,
         },
       }),
     });
@@ -730,8 +759,175 @@ function popupHtmlFor(stop) {
   const bodyLine = stop.is_depot ? 'Depot' : batteryCountText(stop.demand);
   const code = stationCodeOf(stop.name, stop.source_location_id);
   const codeLine = code ? `Code: ${escapeHtml(code)}<br>` : '';
-  return `<b>${escapeHtml(stop.name)}</b><br>${codeLine}${bodyLine}<br><button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
+  const areaLine = stop.region || stop.district
+    ? `Area: ${escapeHtml([stop.region, stop.district].filter(Boolean).join(' / '))}<br>`
+    : '';
+  return `<b>${escapeHtml(stop.name)}</b><br>${codeLine}${areaLine}${bodyLine}<br><button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
 }
+
+// =============================================================
+// EXCLUDE AREAS (region = level 1, district = level 2). The backend tags
+// every loaded stop with its region/district and drops excluded ones in
+// /solve; here we list the areas, grey out their stops and shade them.
+// =============================================================
+const excludedAreas = { 1: new Set(), 2: new Set() };
+const boundaryCache = {};
+let areaCountry = null;
+let areaLayer = null;
+
+function areaOf(stop, level) {
+  return level === 1 ? stop.region : stop.district;
+}
+
+function isInExcludedArea(stop) {
+  return excludedAreas[1].has(stop.region) || excludedAreas[2].has(stop.district);
+}
+
+function markerStyleFor(stop) {
+  if (stop.areaExcluded) return { fillColor: '#5b6472', fillOpacity: 0.35 };
+  if (stop.is_depot) return stop.excluded ? { fillColor: '#5b6472', fillOpacity: 0.5 } : { fillColor: '#f5c04e', fillOpacity: 1 };
+  return { fillColor: '#4fd1a5', fillOpacity: 1 };
+}
+
+function currentAreaLevel() {
+  return parseInt(document.getElementById('area-level').value);
+}
+
+function renderAreaFilter() {
+  const section = document.getElementById('area-filter');
+  const tagged = stops.filter(s => s.region || s.district);
+  section.style.display = tagged.length ? '' : 'none';
+  if (!tagged.length) return;
+
+  const level = currentAreaLevel();
+  const counts = new Map();
+  tagged.forEach(stop => {
+    const name = areaOf(stop, level);
+    if (!name) return;
+    const entry = counts.get(name) || { stations: 0, warehouses: 0, batteries: 0 };
+    if (stop.is_depot) entry.warehouses += 1;
+    else { entry.stations += 1; entry.batteries += stop.demand; }
+    counts.set(name, entry);
+  });
+  // Areas without any stops are listed too: excluding one can't remove a
+  // stop, but trucks' road paths are still checked against it after solving.
+  const boundaries = boundaryCache[`${areaCountry}-${level}`];
+  if (boundaries) {
+    boundaries.features.forEach(f => { if (!counts.has(f.properties.name)) counts.set(f.properties.name, null); });
+  } else if (areaCountry) {
+    loadBoundaries(level).then(renderAreaFilter).catch(() => {});
+  }
+
+  const query = document.getElementById('area-search').value.trim().toLowerCase();
+  const names = [...counts.keys()]
+    .filter(n => n.toLowerCase().includes(query))
+    .sort((a, b) => (counts.get(a) ? 0 : 1) - (counts.get(b) ? 0 : 1) || a.localeCompare(b));
+  const list = document.getElementById('area-list');
+  list.innerHTML = names.length ? names.map(name => {
+    const c = counts.get(name);
+    const parts = [];
+    if (!c) parts.push('no stops');
+    else if (c.stations) parts.push(`${c.stations} st · ${c.batteries} bat`);
+    if (c && c.warehouses) parts.push(`${c.warehouses} WH`);
+    const checked = excludedAreas[level].has(name);
+    return `<label class="area-row${checked ? ' checked' : ''}"><input type="checkbox" data-area="${escapeHtml(name)}" ${checked ? 'checked' : ''}>`
+      + `<span class="area-name">${escapeHtml(name)}</span><span class="area-counts">${parts.join(' · ')}</span></label>`;
+  }).join('') : '<div class="empty-hint">No matching areas.</div>';
+
+  list.querySelectorAll('input[type="checkbox"]').forEach(box => {
+    box.addEventListener('change', e => {
+      const name = e.target.dataset.area;
+      if (e.target.checked) excludedAreas[level].add(name); else excludedAreas[level].delete(name);
+      applyAreaExclusion();
+    });
+  });
+
+  const removed = stops.filter(s => s.areaExcluded);
+  const areaNames = [...excludedAreas[1], ...excludedAreas[2]];
+  document.getElementById('area-summary').textContent = areaNames.length
+    ? `Excluding ${areaNames.length} area(s): ${removed.filter(s => !s.is_depot).length} station(s) and ${removed.filter(s => s.is_depot).length} warehouse(s) left out of routing.`
+    : 'No areas excluded.';
+}
+
+function applyAreaExclusion() {
+  stops.forEach((stop, i) => {
+    stop.areaExcluded = isInExcludedArea(stop);
+    markers[i].setStyle(markerStyleFor(stop));
+  });
+  renderStopList();
+  drawExcludedAreas();
+}
+
+async function loadBoundaries(level) {
+  const key = `${areaCountry}-${level}`;
+  if (!boundaryCache[key]) {
+    const res = await fetch(`${BACKEND_API_URL}/regions/${encodeURIComponent(areaCountry)}/${level}`);
+    if (!res.ok) throw new Error(`Boundary service returned ${res.status}`);
+    boundaryCache[key] = await res.json();
+  }
+  return boundaryCache[key];
+}
+
+async function excludedFeatures() {
+  const features = [];
+  for (const level of [1, 2]) {
+    if (!excludedAreas[level].size) continue;
+    const data = await loadBoundaries(level);
+    features.push(...data.features.filter(f => excludedAreas[level].has(f.properties.name)));
+  }
+  return features;
+}
+
+async function drawExcludedAreas() {
+  if (areaLayer) { map.removeLayer(areaLayer); areaLayer = null; }
+  if (!areaCountry) return;
+  try {
+    const features = await excludedFeatures();
+    if (!features.length) return;
+    areaLayer = L.geoJSON({ type: 'FeatureCollection', features }, {
+      interactive: false,
+      attribution: 'Boundaries &copy; geoBoundaries',
+      style: { color: '#f0685c', weight: 1.5, dashArray: '4 4', fillColor: '#f0685c', fillOpacity: 0.12 },
+    }).addTo(map);
+    areaLayer.bringToBack();
+  } catch (err) {
+    setStatus(`Areas excluded, but their outlines could not be drawn (${err.message}).`, true);
+  }
+}
+
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function featureContains(feature, lat, lon) {
+  return feature.geometry.coordinates.some(([outer, ...holes]) =>
+    pointInRing(lon, lat, outer) && !holes.some(hole => pointInRing(lon, lat, hole)));
+}
+
+// The public OSRM router can't be told to avoid an area, so a truck can
+// still drive THROUGH an excluded area between two allowed stops. This
+// reports which trucks' road paths cross one, so it is never silent.
+async function routeAreaWarning(roadRoutes, truckRoutes) {
+  const features = await excludedFeatures().catch(() => []);
+  if (!features.length) return '';
+  const crossings = [];
+  roadRoutes.forEach((coordinates, index) => {
+    const hit = features.find(f => coordinates.some(([lat, lon]) => featureContains(f, lat, lon)));
+    if (hit) crossings.push(`truck ${truckRoutes[index].truck} via ${hit.properties.name}`);
+  });
+  return crossings.length
+    ? ` Note: no stops in excluded areas were used, but these road paths pass through one (the free OSRM router can't avoid areas): ${crossings.join(', ')}.`
+    : '';
+}
+
+document.getElementById('area-level').addEventListener('change', renderAreaFilter);
+document.getElementById('area-search').addEventListener('input', renderAreaFilter);
 
 function addStop(stop) {
   const hasSizeCounts = (stop.small_boxes || 0) + (stop.mid_boxes || 0) + (stop.large_boxes || 0) > 0;
@@ -748,10 +944,9 @@ function addStop(stop) {
 
   const marker = L.circleMarker([stop.lat, stop.lon], {
     radius: isDepot ? 9 : 7,
-    fillColor: isDepot ? '#f5c04e' : '#4fd1a5',
     color: '#12151a',
     weight: 2,
-    fillOpacity: 1,
+    ...markerStyleFor(stop),
   }).addTo(map);
 
   marker.bindPopup(popupHtmlFor(stop));
@@ -788,6 +983,11 @@ function clearAllStops() {
   routeLabelMarkers = [];
   lastSolveResult = null;
   currentDatasetLabel = 'Manual stops';
+  excludedAreas[1].clear();
+  excludedAreas[2].clear();
+  areaCountry = null;
+  if (areaLayer) { map.removeLayer(areaLayer); areaLayer = null; }
+  document.getElementById('area-search').value = '';
   renderStopList();
   document.getElementById('results').style.display = 'none';
 }
@@ -796,6 +996,7 @@ function renderStopList() {
   const container = document.getElementById('stop-list');
   container.innerHTML = '';
 
+  renderAreaFilter();
   if (stops.length === 0) {
     container.innerHTML = '<div class="empty-hint">No stops yet. Click the map, or load a dataset below.</div>';
     return;
@@ -805,12 +1006,13 @@ function renderStopList() {
     const isDepot = !!stop.is_depot;
     const isExcluded = isDepot && !!stop.excluded;
     const row = document.createElement('div');
-    row.className = 'stop-row' + (isExcluded ? ' excluded' : '');
+    row.className = 'stop-row' + (isExcluded || stop.areaExcluded ? ' excluded' : '');
     row.innerHTML = `
       <div class="dot" style="background:${isDepot ? '#f5c04e' : '#4fd1a5'}"></div>
-      <div class="name">${stop.name}</div>
+      <div class="name">${escapeHtml(stop.name)}</div>
       <div class="stop-meta">
-        ${isDepot ? `<label class="depot-use-toggle"><input type="checkbox" class="depot-use-checkbox" data-index="${i}" ${isExcluded ? '' : 'checked'}><span class="depot-tag">DEPOT</span></label>` : ''}
+        ${stop.areaExcluded ? '<span class="area-tag" title="Inside an excluded area">EXCLUDED AREA</span>' : ''}
+        ${isDepot ?`<label class="depot-use-toggle"><input type="checkbox" class="depot-use-checkbox" data-index="${i}" ${isExcluded ? '' : 'checked'}><span class="depot-tag">DEPOT</span></label>` : ''}
         <span class="remove" data-index="${i}">&times;</span>
       </div>
       ${isDepot ? '' : `<div class="box-quantities">
@@ -845,10 +1047,7 @@ function renderStopList() {
     checkbox.addEventListener('change', (e) => {
       const idx = parseInt(e.target.dataset.index);
       stops[idx].excluded = !e.target.checked;
-      markers[idx].setStyle({
-        fillColor: stops[idx].excluded ? '#5b6472' : '#f5c04e',
-        fillOpacity: stops[idx].excluded ? 0.5 : 1,
-      });
+      markers[idx].setStyle(markerStyleFor(stops[idx]));
       renderStopList();
     });
   });
@@ -900,6 +1099,8 @@ document.getElementById('load-battery-btn').addEventListener('click', async () =
     const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
     map.fitBounds(bounds, { padding: [40, 40] });
 
+    areaCountry = country;
+    renderAreaFilter();
     currentDatasetLabel = `${country} faulty-battery stations (${data.data_source === 'athena' ? 'live database' : 'CSV export - database unavailable'})`;
     let message = `Loaded ${data.stops.length - 1} ${country} battery stations (depot is a placeholder).`;
     if (data.skipped.length > 0) {
@@ -945,6 +1146,8 @@ document.getElementById('load-battery-csv-btn').addEventListener('click', async 
     const bounds = L.latLngBounds(stops.map(s => [s.lat, s.lon]));
     map.fitBounds(bounds, { padding: [40, 40] });
 
+    areaCountry = country;
+    renderAreaFilter();
     currentDatasetLabel = `${country} faulty-battery stations (uploaded CSV: ${stationsFile.name})`;
     let message = `Loaded ${data.stops.length - 1} ${country} battery stations from uploaded CSV.`;
     if (data.skipped.length > 0) {
@@ -987,6 +1190,8 @@ document.getElementById('solve-btn').addEventListener('click', async () => {
     road_place: 'Nairobi, Kenya',
     toll_taxes: tollTaxes,
     shipment_mode: 'same', // pickup/drop are always the same location in this app now
+    excluded_regions: [...excludedAreas[1]],
+    excluded_districts: [...excludedAreas[2]],
   };
 
   setStatus('Solving...', false);
@@ -1005,12 +1210,13 @@ document.getElementById('solve-btn').addEventListener('click', async () => {
     }
 
     const result = await res.json();
-    await renderResult(result);
+    const areaWarning = await renderResult(result);
+    lastSolveExclusions = { regions: requestBody.excluded_regions, districts: requestBody.excluded_districts };
     // Reflect what the backend ACTUALLY used, not just what was requested —
     // a TomTom request can silently fall back to OSRM (see app.py), and the
     // map/traffic UI should show the real source, not the one that was asked for.
     setRoutingProvider(result.routing_algorithm.startsWith('tomtom') ? 'tomtom' : 'osrm');
-    setStatus(describeRoutingAlgorithm(result.routing_algorithm), false);
+    setStatus(describeRoutingAlgorithm(result.routing_algorithm) + areaWarning, false);
   } catch (err) {
     setStatus(`Error: ${err.message}`, true);
   } finally {
@@ -1223,21 +1429,20 @@ async function renderResult(result) {
     result.truck_routes.flatMap(truckRoute => truckRoute.visit_order_names)
   );
   markers.forEach((marker, i) => {
-    if (stops[i].is_depot) {
-      // Manually excluded depots stay grey/dim — that's a deliberate
-      // choice, not the solver failing to reach them like a real drop.
-      marker.setStyle(stops[i].excluded
-        ? { fillColor: '#5b6472', fillOpacity: 0.5 }
-        : { fillColor: '#f5c04e', fillOpacity: 1 });
+    if (stops[i].is_depot || stops[i].areaExcluded) {
+      // Manually excluded depots and stops in excluded areas stay grey —
+      // a deliberate choice, not the solver failing to reach them.
+      marker.setStyle(markerStyleFor(stops[i]));
     } else if (servedNames.has(stops[i].name) || [...servedNames].some(name => name.startsWith(`${stops[i].name} (part `))) {
-      marker.setStyle({ fillColor: '#4fd1a5' });
+      marker.setStyle({ fillColor: '#4fd1a5', fillOpacity: 1 });
     } else {
-      marker.setStyle({ fillColor: '#e0685a' });
+      marker.setStyle({ fillColor: '#e0685a', fillOpacity: 1 });
     }
   });
 
   map.fitBounds(routeBounds, { padding: [40, 40] });
   lastSolveResult = result;
+  return routeAreaWarning(roadRoutes, result.truck_routes);
 }
 
 // Initial empty state

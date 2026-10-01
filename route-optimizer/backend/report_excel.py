@@ -88,6 +88,7 @@ def build_route_report(result, country=None, dataset=None, settings=None):
                     label, count, None, None,
                     d["cumulative_km"], d["cumulative_fuel_cost"],
                     len(stations), d["leg_km"], d["leg_fuel_cost"], d["cumulative_hours"],
+                    d.get("region"), d.get("district"),
                 ])
 
         batteries = route["total_batteries_picked"]
@@ -126,6 +127,7 @@ def build_route_report(result, country=None, dataset=None, settings=None):
         "Battery Size type", "faulty Batteries_Delivered", "Battery Manf Name", "Battery Dimension (if available)",
         "Final distance in km", "Fuel Cost in $",
         "Stop_Sequence", "Leg distance in km", "Leg fuel cost in $", "Cumulative driving hours",
+        "Region", "District",
     ], stop_rows, {11: KM_FORMAT, 12: MONEY_FORMAT, 14: KM_FORMAT, 15: MONEY_FORMAT})
     _finish_sheet(ws)
 
@@ -166,6 +168,9 @@ def build_route_report(result, country=None, dataset=None, settings=None):
         ("Max driving hours per day", settings.get("max_driving_hours")),
         ("Max trip days", settings.get("max_trip_days")),
         ("Fuel cost per km ($)", settings.get("road_cost_per_km")),
+        ("Excluded regions", ", ".join(settings.get("excluded_regions") or []) or "None"),
+        ("Excluded districts", ", ".join(settings.get("excluded_districts") or []) or "None"),
+        ("Stops removed by excluded areas", len(result.get("region_excluded_stops", []))),
         ("Trucks used", result["trucks_needed"]),
         ("Trips", len(result["truck_routes"])),
         ("Stations served", result["num_stops_served"]),
@@ -195,12 +200,24 @@ def build_route_report(result, country=None, dataset=None, settings=None):
     dropped = result.get("dropped_stop_details", [])
     ws.cell(row=row + 2, column=1, value="Dropped stations (not served by any truck)").font = SECTION_FONT
     if dropped:
-        _write_table(ws, row + 3, ["Station_ID", "Station_Name", "Country", "Small", "Mid", "Large", "Total batteries"], [
-            [d["code"], d["name"], d.get("country") or country, d["small_boxes"], d["mid_boxes"], d["large_boxes"], d["batteries"]]
+        row = _write_table(ws, row + 3, ["Station_ID", "Station_Name", "Country", "Region", "District", "Small", "Mid", "Large", "Total batteries"], [
+            [d["code"], d["name"], d.get("country") or country, d.get("region"), d.get("district"),
+             d["small_boxes"], d["mid_boxes"], d["large_boxes"], d["batteries"]]
             for d in dropped
         ])
     else:
-        ws.cell(row=row + 3, column=1, value="None - every station was served.")
+        row += 3
+        ws.cell(row=row, column=1, value="None - every station was served.")
+
+    area_excluded = result.get("region_excluded_stops", [])
+    ws.cell(row=row + 2, column=1, value="Stops removed by excluded regions/districts").font = SECTION_FONT
+    if area_excluded:
+        _write_table(ws, row + 3, ["Code", "Name", "Type", "Region", "District", "Total batteries"], [
+            [d["code"], d["name"], "Warehouse" if d["is_depot"] else "Station", d.get("region"), d.get("district"), d["batteries"]]
+            for d in area_excluded
+        ])
+    else:
+        ws.cell(row=row + 3, column=1, value="None - no areas were excluded.")
     _finish_sheet(ws, filter_table=False)
 
     buffer = io.BytesIO()
