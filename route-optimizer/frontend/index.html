@@ -9,12 +9,6 @@
      need to install anything for the map itself. -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<!-- html2canvas rasterizes the map (tiles, routes, markers); jsPDF +
-     autotable assemble those images and the route tables into the
-     downloadable PDF route report. -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -200,7 +194,7 @@
     font-weight: 700;
     box-shadow: 0 4px 14px rgba(69, 214, 168, 0.22);
   }
-  #load-example-btn, #load-battery-btn, #load-battery-csv-btn { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); }
+  #load-example-btn, #load-battery-btn, #load-battery-csv-btn, #download-report-btn { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); }
   input[type="file"] { width: 100%; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
   input[type="file"]::file-selector-button { background: var(--panel-raised); border: 1px solid var(--panel-border); color: var(--text); border-radius: 6px; padding: 5px 10px; margin-right: 8px; cursor: pointer; font-family: inherit; }
   #clear-btn { background: transparent; border: 1px solid var(--panel-border); color: var(--text-dim); font-size: 12px; padding: 8px; margin-top: 8px; }
@@ -309,8 +303,8 @@
   .traffic-legend { background: rgba(23, 27, 33, 0.95); color: var(--text); padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 8px; font-size: 12px; line-height: 1.8; box-shadow: 0 4px 16px rgba(0,0,0,0.35); font-family: 'Inter', sans-serif; }
   .traffic-legend strong { display: block; margin-bottom: 3px; }
   .traffic-key { display: inline-block; width: 24px; height: 5px; margin-right: 7px; vertical-align: middle; border-radius: 3px; }
-  /* Reset-view and download-map render as a .leaflet-bar group (see
-     mapToolsControl) so they already inherit the same dark styling and
+  /* Reset-view renders as a .leaflet-bar group (see
+     mapToolsControl) so it already inherits the same dark styling and
      grouping as the zoom control via the .leaflet-bar/.leaflet-bar a
      rules below — only the icon sizing needs a small nudge here. */
   .map-tools-control a { font-size: 15px; text-decoration: none; }
@@ -335,9 +329,7 @@
 
   .route-order-marker { display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #06140f; font-weight: 700; font-size: 11px; border: 2px solid #12151a; box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
   /* The Start/End marker itself is built as inline SVG in orderIcon() (a
-     triangle, distinguishable from these numbered circles at a glance) —
-     not CSS clip-path, since html2canvas (the "Download map" button)
-     can't rasterize clip-path correctly but handles SVG shapes fine. */
+     triangle, distinguishable from these numbered circles at a glance). */
 
   /* Route lines get a dark halo underneath so they read clearly against
      both the dark basemap and the TomTom basemap option. */
@@ -461,6 +453,8 @@
       </div>
     </div>
 
+    <button id="download-report-btn" type="button">Download report (Excel)</button>
+
     <div class="result-card">
       <label style="margin-bottom: 8px;">Route order</label>
       <ul class="route-list" id="r-route-list"></ul>
@@ -497,10 +491,8 @@ let tollTaxes = [];
 const map = L.map('map').setView([-1.2921, 36.8219], 12); // Nairobi by default
 const defaultMapCenter = [-1.2921, 36.8219];
 
-// Reset-view and download-map share ONE grouped toolbar (a standard
-// Leaflet .leaflet-bar, the same construct the zoom control uses) instead
-// of two separate floating buttons — visually consistent with the zoom
-// control right above it instead of looking like two disconnected squares.
+// Reset-view lives in a standard Leaflet .leaflet-bar (the same construct
+// the zoom control uses) so it matches the zoom control right above it.
 const mapToolsControl = L.control({ position: 'topleft' });
 mapToolsControl.onAdd = () => {
   const container = L.DomUtil.create('div', 'leaflet-bar map-tools-control');
@@ -511,20 +503,6 @@ mapToolsControl.onAdd = () => {
   resetButton.innerHTML = '&#8962;';
   resetButton.addEventListener('click', e => { e.preventDefault(); map.setView(defaultMapCenter, 12); });
 
-  // Builds a PDF route report (summary, overview map, per-truck maps and
-  // stop tables). Both basemaps (TomTom, Esri) send
-  // Access-Control-Allow-Origin: *, and the tile layers below are set to
-  // crossOrigin:true to match, so html2canvas can read the tile pixels
-  // instead of hitting a tainted-canvas security error.
-  const downloadButton = L.DomUtil.create('a', '', container);
-  downloadButton.href = '#';
-  downloadButton.title = 'Download route report (PDF)';
-  downloadButton.innerHTML = '&#8681;'; // down arrow
-  downloadButton.addEventListener('click', e => {
-    e.preventDefault();
-    if (!downloadButton.classList.contains('busy')) downloadRouteReport(downloadButton);
-  });
-
   L.DomEvent.disableClickPropagation(container);
   return container;
 };
@@ -533,206 +511,57 @@ mapToolsControl.addTo(map);
 let lastSolveResult = null;
 let currentDatasetLabel = 'Manual stops';
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-async function waitForTiles(timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  await sleep(300); // let Leaflet request tiles for the new view
-  while (Date.now() < deadline) {
-    let layerLoading = false;
-    map.eachLayer(layer => { if (layer instanceof L.GridLayer && layer.isLoading()) layerLoading = true; });
-    const pendingImages = [...document.querySelectorAll('#map img.leaflet-tile')].filter(img => !img.complete);
-    if (!layerLoading && pendingImages.length === 0) break;
-    await sleep(200);
-  }
-  // Leaflet fades freshly loaded tiles in from opacity 0 — capturing
-  // mid-fade leaves blank grey squares in the image.
-  await sleep(500);
-}
-
-// truckIndex null shows every truck; otherwise only that truck's line and
-// numbered markers are visible, so its own map page isn't cluttered.
-function showOnlyTruck(truckIndex) {
-  routeLines.forEach((line, i) => line.setStyle({ opacity: truckIndex === null || i === truckIndex ? 0.9 : 0 }));
-  routeLabelMarkers.forEach(marker => {
-    const el = marker.getElement();
-    if (el) el.style.display = truckIndex === null || marker.options.truckIndex === truckIndex ? '' : 'none';
-  });
-}
-
-async function captureMap(bounds) {
-  map.closePopup();
-  map.fitBounds(bounds, { padding: [40, 40], animate: false });
-  await waitForTiles();
-  return html2canvas(document.getElementById('map'), { useCORS: true, logging: false, backgroundColor: '#ffffff', scale: 1.5 });
-}
-
-function addMapImage(doc, canvas, y, heading = '') {
-  const margin = 14;
-  const headingSpace = heading ? 7 : 0;
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  let width = pageWidth - 2 * margin;
-  let height = width * canvas.height / canvas.width;
-  const maxHeight = pageHeight * 0.55;
-  if (height > maxHeight) {
-    width = width * maxHeight / height;
-    height = maxHeight;
-  }
-  if (y + headingSpace + height > pageHeight - margin) {
-    doc.addPage();
-    y = 20;
-  }
-  if (heading) {
-    doc.setFontSize(12);
-    doc.text(heading, margin, y + 4);
-    y += headingSpace;
-  }
-  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', (pageWidth - width) / 2, y, width, height);
-  return y + height;
-}
-
-async function downloadRouteReport(button) {
-  if (!lastSolveResult || routeLines.length === 0) {
+// The report is built server-side (report_excel.py) from the last solve
+// result, so it always matches exactly what the solver returned.
+async function downloadExcelReport() {
+  const button = document.getElementById('download-report-btn');
+  if (!lastSolveResult) {
     setStatus('Solve a route first - the report covers the solved routes.', true);
     return;
   }
-  const result = lastSolveResult;
-  const originalHtml = button.innerHTML;
-  button.innerHTML = '&hellip;';
-  button.classList.add('busy');
-  const savedCenter = map.getCenter();
-  const savedZoom = map.getZoom();
-  // Leaflet's own zoom/attribution/layer controls shouldn't appear in the
-  // map images — hide them for the captures, then restore them.
-  const controlsToHide = document.querySelectorAll('.leaflet-control-container > *');
-  controlsToHide.forEach(el => { el.style.visibility = 'hidden'; });
-
+  button.disabled = true;
+  setStatus('Building Excel report...', false);
   try {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    const margin = 14;
-    const headStyles = { fillColor: [18, 21, 26] };
-
-    doc.setFontSize(18);
-    doc.text('Faulty-battery pickup route report', margin, 20);
-    doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, margin, 27);
-    doc.text(`Dataset: ${currentDatasetLabel}`, margin, 32);
-    doc.setTextColor(0);
-
-    const truckCapacity = parseInt(document.getElementById('capacity').value);
-    const totalKm = result.truck_routes.reduce((sum, t) => sum + t.distance_km, 0);
-    const totalHours = result.truck_routes.reduce((sum, t) => sum + t.driving_hours, 0);
-    doc.autoTable({
-      startY: 37,
-      head: [['Summary', '']],
-      body: [
-        ['Trucks needed', String(result.trucks_needed)],
-        ['Batteries collected', `${result.total_cartons_picked} / ${truckCapacity * result.trucks_needed} (${(result.fill_ratio * 100).toFixed(1)}% fill)`],
-        ['Fill target', result.meets_fill_target ? 'Met' : 'Not reached'],
-        ['Stops served', String(result.num_stops_served)],
-        ['Stops dropped', String(result.dropped_stops.length)],
-        ['Total distance', `${totalKm.toFixed(1)} km`],
-        ['Total driving time', `${totalHours.toFixed(2)} h`],
-        ['Fuel cost', `$${result.fuel_cost.toFixed(2)}`],
-        ['Toll tax', `$${result.toll_tax_total.toFixed(2)}`],
-        ['Total operating cost', `$${result.total_operating_cost.toFixed(2)}`],
-        ['Routing engine', describeRoutingAlgorithm(result.routing_algorithm)],
-      ],
-      theme: 'grid',
-      headStyles,
-      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
-      margin: { left: margin, right: margin },
+    const res = await fetch(`${BACKEND_API_URL}/report/excel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        result: lastSolveResult,
+        country: document.getElementById('battery-country').value,
+        dataset: currentDatasetLabel,
+        settings: {
+          vehicle_capacity: parseInt(document.getElementById('capacity').value),
+          target_fill_ratio: parseFloat(document.getElementById('fill-target').value) / 100,
+          max_driving_hours: parseFloat(document.getElementById('max-driving-hours').value),
+          max_trip_days: parseInt(document.getElementById('max-trip-days').value) || 1,
+          road_cost_per_km: parseFloat(document.getElementById('fuel-cost').value),
+        },
+      }),
     });
-
-    setStatus('Building report: overview map...', false);
-    showOnlyTruck(null);
-    const overview = await captureMap(L.featureGroup(routeLines).getBounds());
-    addMapImage(doc, overview, doc.lastAutoTable.finalY + 6, 'All routes');
-
-    for (let index = 0; index < result.truck_routes.length; index++) {
-      const truckRoute = result.truck_routes[index];
-      setStatus(`Building report: truck ${index + 1} of ${result.truck_routes.length}...`, false);
-      doc.addPage();
-      doc.setFontSize(14);
-      doc.text(`Truck ${truckRoute.truck}`, margin, 20);
-      doc.setFontSize(10);
-      doc.setTextColor(100);
-      const days = truckRoute.estimated_days > 1 ? ` | ~${truckRoute.estimated_days}-day trip` : '';
-      doc.text(
-        `${truckRoute.total_batteries_picked} batteries | ${truckRoute.distance_km} km | $${truckRoute.fuel_cost.toFixed(2)} fuel | ${truckRoute.driving_hours.toFixed(2)} h driving${days}`,
-        margin, 26,
-      );
-      doc.setTextColor(0);
-
-      showOnlyTruck(index);
-      const canvas = await captureMap(routeLines[index].getBounds());
-      const mapBottom = addMapImage(doc, canvas, 30);
-
-      const lastIndex = truckRoute.visit_order_names.length - 1;
-      let load = 0;
-      const rows = truckRoute.visit_order_names.map((name, i) => {
-        const boxes = truckRoute.boxes[i];
-        load += boxes;
-        const isEndpoint = (i === 0 || i === lastIndex) && boxes === 0;
-        return [
-          i === 0 ? 'Start' : i === lastIndex ? 'End' : String(i),
-          name,
-          truckRoute.visit_order_codes?.[i] || '',
-          isEndpoint ? 'Depot' : String(boxes),
-          String(load),
-        ];
-      });
-      doc.autoTable({
-        startY: mapBottom + 6,
-        head: [['Stop', 'Station', 'Code', 'Batteries', 'Load after stop']],
-        body: rows,
-        theme: 'striped',
-        headStyles,
-        margin: { left: margin, right: margin },
-      });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `Server returned ${res.status}`);
     }
-
-    if (result.dropped_stop_names.length > 0) {
-      doc.addPage();
-      doc.setFontSize(14);
-      doc.text('Dropped stops (not served by any truck)', margin, 20);
-      doc.autoTable({
-        startY: 26,
-        head: [['Station', 'Code', 'Batteries']],
-        body: result.dropped_stop_names.map(name => {
-          const stop = stops.find(s => s.name === name);
-          return [name, stop?.source_location_id || '', stop ? String(stop.demand) : ''];
-        }),
-        theme: 'striped',
-        headStyles,
-        margin: { left: margin, right: margin },
-      });
-    }
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    doc.save(`route-report-${timestamp}.pdf`);
-    setStatus('Route report downloaded.', false);
-  } catch (error) {
-    console.error('Route report failed:', error);
-    setStatus(`Could not build the route report: ${error.message}`, true);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `route-report-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.xlsx`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatus('Excel report downloaded.', false);
+  } catch (err) {
+    setStatus(`Could not build the Excel report: ${err.message}`, true);
   } finally {
-    showOnlyTruck(null);
-    map.setView(savedCenter, savedZoom, { animate: false });
-    controlsToHide.forEach(el => { el.style.visibility = ''; });
-    button.innerHTML = originalHtml;
-    button.classList.remove('busy');
+    button.disabled = false;
   }
 }
+
+document.getElementById('download-report-btn').addEventListener('click', downloadExcelReport);
 
 const tomTomApiKey = '2YuAfLSaDCZxrfiSC5zsFpirtzLlRU2c';
 const tomTomTiles = L.tileLayer(
   `https://api.tomtom.com/map/1/tile/basic/main/{z}/{x}/{y}.png?view=Unified&language=en-US&key=${tomTomApiKey}`,
-  // crossOrigin lets html2canvas read these tile pixels for the "Download
-  // map" button — TomTom's tile server sends Access-Control-Allow-Origin: *,
-  // so this doesn't taint the canvas the way most tile providers would.
   { maxZoom: 22, updateWhenIdle: true, keepBuffer: 1, attribution: '&copy; TomTom', crossOrigin: true }
 );
 tomTomTiles.addTo(map);
@@ -1351,10 +1180,6 @@ async function renderResult(result) {
   routeLabelMarkers = [];
   function orderIcon(label, color, isStart) {
     const size = isStart ? 26 : 22;
-    // The start/end marker is an inline SVG triangle rather than a CSS
-    // clip-path div — html2canvas (used by the "Download map" button)
-    // doesn't support clip-path and would render its bounding box (a
-    // square) instead, but it renders SVG shapes correctly.
     const html = isStart
       ? `<div style="position:relative;width:${size}px;height:${size}px;">
            <svg width="${size}" height="${size}" viewBox="0 0 100 100" style="position:absolute;top:0;left:0;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5));">
@@ -1385,7 +1210,7 @@ async function renderResult(result) {
         : `Truck ${truckRoute.truck} — Stop ${i}: ${name}${code ? ` (${code})` : ''} — ${batteries}`;
       const popupText = `<b>${name}</b><br>${code ? `Code: ${code}<br>` : ''}${isStart ? 'Depot (Start/End)' : batteries}`;
       const position = isStart ? startOffsets[index] : [c.lat, c.lon];
-      const marker = L.marker(position, { icon: orderIcon(label, color, isStart), truckIndex: index })
+      const marker = L.marker(position, { icon: orderIcon(label, color, isStart) })
         .bindTooltip(tooltipText, { direction: 'top' })
         .bindPopup(popupText)
         .addTo(map);

@@ -35,6 +35,7 @@ import csv
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, confloat
 from typing import List, Optional
 
@@ -71,6 +72,7 @@ app.add_middleware(
 class Stop(BaseModel):
     name: str
     source_location_id: Optional[str] = Field(None, description="Station/warehouse code, echoed back per stop in truck_routes")
+    country: Optional[str] = None
     lat: float
     lon: float
     demand: Optional[int] = Field(None, ge=0, description="Legacy total box count; calculated from size quantities when supplied")
@@ -114,6 +116,7 @@ class SolveResponse(BaseModel):
     trucks_needed: int
     truck_routes: List[dict]
     route_coordinates: List[dict]  # [{lat, lon}, ...] in visiting order, for drawing on the map
+    dropped_stop_details: List[dict]
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +330,9 @@ def solve(request: SolveRequest):
             pickup_delivery_pairs.append((pickup_index, drop_index))
             continue
         remaining = demands[index]
+        sizes_left = {key: stop_data[key] for key in ("small_boxes", "mid_boxes", "large_boxes")}
+        if sum(sizes_left.values()) == 0:
+            sizes_left["mid_boxes"] = remaining  # legacy demand-only stop
         part_number = 1
         while remaining > 0:
             part_demand = min(remaining, request.vehicle_capacity)
@@ -334,6 +340,14 @@ def solve(request: SolveRequest):
             if demands[index] > request.vehicle_capacity:
                 part_data["name"] = f"{stop.name} (part {part_number})"
             part_data["demand"] = part_demand
+            # Each part carries only its own share of the size breakdown, so
+            # per-size totals across parts still add up to the real stop.
+            to_assign = part_demand
+            for key in ("small_boxes", "mid_boxes", "large_boxes"):
+                taken = min(sizes_left[key], to_assign)
+                part_data[key] = taken
+                sizes_left[key] -= taken
+                to_assign -= taken
             routing_stops.append(part_data)
             routing_demands.append(part_demand)
             origin_index.append(index)
@@ -405,6 +419,40 @@ def solve(request: SolveRequest):
             for start, end in zip(route_stops, route_stops[1:])
         )
 
+    depot_index_set = set(routing_depot_indices)
+
+    def stop_details_of(route_stops):
+        details = []
+        cumulative_km = cumulative_fuel = cumulative_seconds = 0.0
+        previous = None
+        for i in route_stops:
+            leg_cost = cost_matrix[previous][i] if previous is not None else 0
+            leg_km = distance_km_from_matrix_cost(leg_cost, request.road_cost_per_km)
+            leg_fuel = fuel_cost_from_matrix_cost(leg_cost, request.road_cost_per_km)
+            leg_seconds = travel_time_matrix[previous][i] if previous is not None else 0
+            cumulative_km += leg_km
+            cumulative_fuel += leg_fuel
+            cumulative_seconds += leg_seconds
+            stop_data = stops_as_dicts[i]
+            details.append({
+                "name": stop_data["name"],
+                "code": stop_data.get("source_location_id"),
+                "country": stop_data.get("country"),
+                "is_depot": i in depot_index_set,
+                "small_boxes": stop_data.get("small_boxes", 0),
+                "mid_boxes": stop_data.get("mid_boxes", 0),
+                "large_boxes": stop_data.get("large_boxes", 0),
+                "batteries": demands[i],
+                "leg_km": round(leg_km, 2),
+                "cumulative_km": round(cumulative_km, 2),
+                "leg_fuel_cost": round(leg_fuel, 2),
+                "cumulative_fuel_cost": round(cumulative_fuel, 2),
+                "leg_hours": round(leg_seconds / 3600, 2),
+                "cumulative_hours": round(cumulative_seconds / 3600, 2),
+            })
+            previous = i
+        return details
+
     truck_routes = []
     for index, route_data in enumerate(result["routes"]):
         route_stops = route_data["stops"]
@@ -423,6 +471,7 @@ def solve(request: SolveRequest):
             "driving_hours": round(route_data["driving_seconds"] / 3600, 2),
             "estimated_days": max(1, int(-(-route_data["driving_seconds"] // (request.max_driving_hours * 3600)))),
             "coordinates": [{"lat": stops_as_dicts[i]["lat"], "lon": stops_as_dicts[i]["lon"]} for i in route_stops],
+            "stop_details": stop_details_of(route_stops),
         })
 
     route_matrix_cost = sum(route_matrix_cost_of(route_data["stops"]) for route_data in result["routes"])
@@ -459,4 +508,39 @@ def solve(request: SolveRequest):
         trucks_needed=result["num_vehicles"],
         truck_routes=truck_routes,
         route_coordinates=route_coordinates,
+        dropped_stop_details=[
+            {
+                "name": stops[i].name,
+                "code": stops[i].source_location_id,
+                "country": stops[i].country,
+                "small_boxes": stops[i].small_boxes,
+                "mid_boxes": stops[i].mid_boxes,
+                "large_boxes": stops[i].large_boxes,
+                "batteries": stop_demand(stops[i]),
+            }
+            for i in dropped_original_indices
+        ],
+    )
+
+
+class ReportRequest(BaseModel):
+    result: dict = Field(..., description="The /solve response to build the report from")
+    country: Optional[str] = None
+    dataset: Optional[str] = None
+    settings: dict = Field(default_factory=dict, description="Solve settings shown on the Overall Report sheet")
+
+
+@app.post("/report/excel")
+def route_report_excel(request: ReportRequest):
+    """Builds the stop/trip/truck/overall route report workbook for a solve result."""
+    from report_excel import build_route_report
+
+    try:
+        content = build_route_report(request.result, request.country, request.dataset, request.settings)
+    except (KeyError, TypeError, IndexError) as e:
+        raise HTTPException(status_code=400, detail=f"Result is missing data needed for the report ({e}). Solve the route again and retry.")
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="route-report.xlsx"'},
     )
