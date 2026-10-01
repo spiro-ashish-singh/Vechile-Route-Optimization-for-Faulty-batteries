@@ -209,9 +209,13 @@ WORKING_BATTERY_QUERY = """
 SELECT
     country,
     station_id,
-    SUM(working_batteries) AS working_batteries
+    working_batteries
 FROM "Data-Athena-Dev"."curated_db"."daily_station_utlization"
-GROUP BY country, station_id
+WHERE run_date = (
+    SELECT MAX(run_date)
+    FROM "Data-Athena-Dev"."curated_db"."daily_station_utlization"
+)
+GROUP BY country, station_id, working_batteries
 """
 
 
