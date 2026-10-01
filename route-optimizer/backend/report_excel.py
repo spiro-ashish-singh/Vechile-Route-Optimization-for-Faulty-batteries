@@ -89,6 +89,7 @@ def build_route_report(result, country=None, dataset=None, settings=None):
                     d["cumulative_km"], d["cumulative_fuel_cost"],
                     len(stations), d["leg_km"], d["leg_fuel_cost"], d["cumulative_hours"],
                     d.get("region"), d.get("district"),
+                    d.get("station_faulty_batteries"), d.get("working_batteries"),
                 ])
 
         batteries = route["total_batteries_picked"]
@@ -128,7 +129,14 @@ def build_route_report(result, country=None, dataset=None, settings=None):
         "Final distance in km", "Fuel Cost in $",
         "Stop_Sequence", "Leg distance in km", "Leg fuel cost in $", "Cumulative driving hours",
         "Region", "District",
+        "Station faulty batteries", "Working batteries", "Total batteries (faulty + working)", "Faulty battery %",
     ], stop_rows, {11: KM_FORMAT, 12: MONEY_FORMAT, 14: KM_FORMAT, 15: MONEY_FORMAT})
+    # Total and % are formulas so they recalculate when working batteries are
+    # filled in by hand; blank working count -> blank total and % (not 100%).
+    for r in range(2, len(stop_rows) + 2):
+        ws[f"V{r}"] = f'=IF(U{r}="","",T{r}+U{r})'
+        ws[f"W{r}"] = f'=IF(OR(U{r}="",V{r}=0),"",T{r}/V{r})'
+        ws[f"W{r}"].number_format = PERCENT_FORMAT
     _finish_sheet(ws)
 
     ws = wb.create_sheet("truck level")

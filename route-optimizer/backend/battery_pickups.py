@@ -205,6 +205,28 @@ def faulty_battery_stations():
     return _rows_to_stations(run_athena_query(FAULTY_BATTERY_QUERY))
 
 
+WORKING_BATTERY_QUERY = """
+SELECT
+    country,
+    station_id,
+    SUM(working_batteries) AS working_batteries
+FROM "Data-Athena-Dev"."curated_db"."daily_station_utlization"
+GROUP BY country, station_id
+"""
+
+
+def working_batteries_by_station():
+    """{station_id: working battery count} from Athena; keys match source_location_id."""
+    from connection import run_athena_query
+    totals = {}
+    for row in run_athena_query(WORKING_BATTERY_QUERY):
+        station_id = (row.get("station_id") or "").strip()
+        value = row.get("working_batteries")
+        if station_id and not _is_missing(value):
+            totals[station_id] = totals.get(station_id, 0) + int(float(value))
+    return totals
+
+
 def faulty_battery_stations_from_csv(csv_path, country=None):
     """
     Same output as faulty_battery_stations(), but reads a CSV export

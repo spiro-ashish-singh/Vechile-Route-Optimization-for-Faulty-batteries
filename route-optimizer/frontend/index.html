@@ -762,7 +762,11 @@ function popupHtmlFor(stop) {
   const areaLine = stop.region || stop.district
     ? `Area: ${escapeHtml([stop.region, stop.district].filter(Boolean).join(' / '))}<br>`
     : '';
-  return `<b>${escapeHtml(stop.name)}</b><br>${codeLine}${areaLine}${bodyLine}<br><button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
+  const total = stop.demand + (stop.working_batteries ?? 0);
+  const healthLine = !stop.is_depot && stop.working_batteries != null && total > 0
+    ? `${stop.working_batteries} working &middot; ${(stop.demand / total * 100).toFixed(1)}% faulty<br>`
+    : '';
+  return `<b>${escapeHtml(stop.name)}</b><br>${codeLine}${areaLine}${bodyLine}<br>${healthLine}<button type="button" class="map-remove-stop" style="margin-top:8px; padding:5px 8px; width:auto; font-size:11px;">Remove this point</button>`;
 }
 
 // =============================================================

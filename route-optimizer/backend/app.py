@@ -77,6 +77,7 @@ class Stop(BaseModel):
     country: Optional[str] = None
     region: Optional[str] = None
     district: Optional[str] = None
+    working_batteries: Optional[int] = Field(None, ge=0, description="Working batteries at this station, for the faulty % in the report")
     lat: float
     lon: float
     demand: Optional[int] = Field(None, ge=0, description="Legacy total box count; calculated from size quantities when supplied")
@@ -166,6 +167,28 @@ def route_geometry(request: RouteGeometryRequest):
     return {"geometry": geometry}
 
 
+def attach_working_batteries(stops):
+    """
+    Adds working_batteries (from Athena's daily station utilisation) to each
+    station stop, matched on station code. Returns a short description of
+    the outcome; on failure every station keeps working_batteries=None so
+    the report leaves those columns blank instead of guessing.
+    """
+    from battery_pickups import working_batteries_by_station
+
+    try:
+        working = working_batteries_by_station()
+    except Exception as e:
+        for stop in stops:
+            stop["working_batteries"] = None
+        return f"unavailable ({e})"
+    matched = 0
+    for stop in stops:
+        stop["working_batteries"] = None if stop.get("is_depot") else working.get(stop.get("source_location_id"))
+        matched += stop["working_batteries"] is not None
+    return f"athena ({matched} station(s) matched)"
+
+
 @app.get("/battery-stations")
 def get_battery_stations(country: str = "Rwanda"):
     """
@@ -211,6 +234,7 @@ def get_battery_stations(country: str = "Rwanda"):
         for s in stations
     ]
     tag_regions(stops, country)
+    working_data_source = attach_working_batteries(stops)
     road_cost_per_km = FUEL_PRICE_USD_PER_LITER[country] * FUEL_CONSUMPTION_L_PER_KM
 
     return {
@@ -220,6 +244,7 @@ def get_battery_stations(country: str = "Rwanda"):
         "country": country,
         "road_cost_per_km": road_cost_per_km,
         "warehouse_count": len(depot_stops),
+        "working_data_source": working_data_source,
     }
 
 
@@ -266,6 +291,7 @@ async def upload_battery_stations(
         for s in stations
     ]
     tag_regions(stops, country)
+    working_data_source = attach_working_batteries(stops)
     road_cost_per_km = FUEL_PRICE_USD_PER_LITER[country] * FUEL_CONSUMPTION_L_PER_KM
 
     return {
@@ -275,6 +301,7 @@ async def upload_battery_stations(
         "country": country,
         "road_cost_per_km": road_cost_per_km,
         "warehouse_count": len(depot_stops),
+        "working_data_source": working_data_source,
     }
 
 
@@ -344,6 +371,9 @@ def solve(request: SolveRequest):
     routing_depot_indices = []  # positions within routing_stops that are depots
     for index, stop in enumerate(stops):
         stop_data = stop.model_dump()
+        # The whole station's faulty count, kept on every capacity part so the
+        # report's faulty % is per station, not per part.
+        stop_data["station_faulty_batteries"] = demands[index]
         if index in depot_position_set:
             routing_depot_indices.append(len(routing_stops))
             routing_stops.append(stop_data)
@@ -479,6 +509,8 @@ def solve(request: SolveRequest):
                 "mid_boxes": stop_data.get("mid_boxes", 0),
                 "large_boxes": stop_data.get("large_boxes", 0),
                 "batteries": demands[i],
+                "station_faulty_batteries": stop_data.get("station_faulty_batteries"),
+                "working_batteries": stop_data.get("working_batteries"),
                 "leg_km": round(leg_km, 2),
                 "cumulative_km": round(cumulative_km, 2),
                 "leg_fuel_cost": round(leg_fuel, 2),
